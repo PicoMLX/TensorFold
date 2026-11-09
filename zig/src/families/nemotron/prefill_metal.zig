@@ -75,7 +75,7 @@ const Ops = struct {
     }
     /// A submitted chunk's pocket products into its cache's usage mask (forgetting on only).
     pub fn landed(o: Ops, s: *lanes.Stream, rows: usize) !void {
-        try @import("metal_usage.zig").chunk(o.m, o.cache(s), rows);
+        try o.m.countUsage(o.cache(s), rows);
     }
     /// This prompt's ids into the prompt buffer the chunks read (the queue landed first).
     pub fn load(o: Ops, s: *lanes.Stream) void {

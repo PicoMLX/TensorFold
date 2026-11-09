@@ -53,6 +53,7 @@ pub const Options = struct {
 };
 
 pub const Metal = struct {
+    pub const countUsage = @import("metal_usage.zig").chunk;
     gpa: std.mem.Allocator,
     m: *Model,
     o: Options,
