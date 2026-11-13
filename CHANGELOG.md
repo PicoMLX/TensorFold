@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Serve: the background prefill of a chat reply's next turn now renders the reply with its reasoning when the client sends reasoning back, as agent clients such as omp do, so that turn resumes past the reply instead of before it. With thinking on, the guess left the reasoning out and missed every time: in one omp session with Qwen3.8-Flash-Next on an M5 Ultra, requests waited 40.8 s in total behind background passes they then redid. In an omp tool loop the next requests now resume at the background pass's end and prefill only the new tool result. A client whose history has no reasoning gets the old guess.
+
 - Docs: the README is now a short quick start and docs list; setup, serve flags and model tables moved to the new run guide and supported models pages, and the Zig preview and 1.0.0 release notes moved into docs/ (#3170). Thanks to @jayleaton.
 
 - Qwen3.8-27B on Intel GPUs: `logprobs` and `top_logprobs` are served, for a lone drafted stream, plain streams and shared rounds, greedy and sampled, with the tokens bit-equal to a request without them and a drafted stream's rows equal to a plain one's; `prompt_logprobs` is still refused. Decode costs 2.9% to 5.4% for a lone drafted stream and 12.9% for two streams at once (a total rate, prefill included); these are an order of magnitude from one Arc Pro B70 in a Gen5 x16 slot, and only the with and without pairs compare (#3051 via #3722, for #3050). Thanks to @Mirrdhyn.
