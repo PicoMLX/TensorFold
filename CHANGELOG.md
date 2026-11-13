@@ -4,6 +4,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Server: `POST /v1/prompt_cache/flush` drops the prompt states kept in RAM and on disk once the requests in flight end, so the next turn prefills cold with tokens unchanged; two flushes run in turn, a 10-minute wait is withdrawn untaken, an engine without the shared store answers 501 and a parked --idle-unload model 503. It is an admin route with keys and loopback-only without (#3210, fixes #3183).
 - Docs: the README is now a short quick start and docs list; setup, serve flags and model tables moved to the new run guide and supported models pages, and the Zig preview and 1.0.0 release notes moved into docs/ (#3170). Thanks to @jayleaton.
 
 - Qwen3.8-27B on Intel GPUs: `logprobs` and `top_logprobs` are served, for a lone drafted stream, plain streams and shared rounds, greedy and sampled, with the tokens bit-equal to a request without them and a drafted stream's rows equal to a plain one's; `prompt_logprobs` is still refused. Decode costs 2.9% to 5.4% for a lone drafted stream and 12.9% for two streams at once (a total rate, prefill included); these are an order of magnitude from one Arc Pro B70 in a Gen5 x16 slot, and only the with and without pairs compare (#3051 via #3722, for #3050). Thanks to @Mirrdhyn.
