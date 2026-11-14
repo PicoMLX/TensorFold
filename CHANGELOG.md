@@ -4,7 +4,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
-- DeepSeek-V4.1 on Metal: prompt attention runs two heads a simdgroup over one load of each key, widens bf16 keys through the bfloat type and reads selected indices four at a time. Output bits are unchanged and still equal decode's. On an M5 Ultra, release layer 2's attention core at 4096 prompt rows drops from 28.6 to 19.0 ms at position 16384 and from 27.5 to 17.1 ms at position 0, and the whole layer from 197 to 188 ms.
+- DeepSeek-V4.1 on Metal: prompt attention runs two heads a simdgroup over one load of each key, widens bf16 keys through the bfloat type and reads selected indices four at a time. Output bits are unchanged and still equal decode's. On an M5 Ultra, release layer 2's attention core at 4096 prompt rows drops from 28.6 to 19.0 ms at position 16384 and from 27.5 to 17.1 ms at position 0, and the whole layer from 197 to 188 ms (#3351).
 
 - DeepSeek V4.1 on Metal: on M5 GPUs (generation 17, macOS 27) the prompt's routed experts run on the tensor units, with every output bit-equal to the decode kernels as before. A 32-wide group of products goes to the tensor unit only when no fp32 sum of it can round; the few other groups take the decode kernels' fmas. On an M5 Ultra, a 4096-row chunk of a layer spends 23.5 ms instead of 45.2 ms in gate/up and 13.2 ms instead of 21.8 ms in down, and the layer takes 155 ms instead of 185 ms. Other Macs keep the simdgroup kernels (#3330).
 
