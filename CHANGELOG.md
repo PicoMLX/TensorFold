@@ -4,7 +4,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
-- DeepSeek-V4.1 on Metal: prompt attention runs two heads a simdgroup over one load of each key, widens bf16 keys through the bfloat type and reads selected indices four at a time. Output bits are unchanged and still equal decode's. On an M5 Ultra, release layer 2's attention core at 4096 prompt rows drops from 28.6 to 19.0 ms at position 16384 and from 27.5 to 17.1 ms at position 0, and the whole layer from 197 to 188 ms.
+- DeepSeek-V4.1 on Metal: prompt attention runs two heads a simdgroup over one load of each key, widens bf16 keys through the bfloat type and reads selected indices four at a time. Output bits are unchanged and still equal decode's. On an M5 Ultra, release layer 2's attention core at 4096 prompt rows drops from 28.6 to 19.0 ms at position 16384 and from 27.5 to 17.1 ms at position 0, and the whole layer from 197 to 188 ms (#3351).
 - Docs: the GLM-5.3-Flash CUDA recipe's Verified copy drafts section lists, for one checkpoint at TP=2 with `--parallel 4`, the loads that `TF_GLM_COPIES=1` sped up and the ones it slowed, and says the default stays off (#3335). Thanks to @Bizuayeu.
 - Tests: the Qwen 3.8 27B Metal residency fixtures compile again on macOS after the DFlash2 target became a value (#3572).
 - Tests: the kernel contract's Llama `gemm_untransposed` control edits the `TF_GEMM_NAX_KERNEL` instance line again, so its planted fault fails as it should (#3157, thanks @gilby, who found and fixed it first).
