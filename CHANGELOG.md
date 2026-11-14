@@ -4,6 +4,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- DeepSeek-V4.1 on Metal: `TF_METAL4=1` sends the family's GPU work through Metal 4 on macOS 26 and later, with the same kernels in the same order and every output bit unchanged, and decode rounds take about 0.3 ms less GPU time. On an M5 Ultra (two runs each way, alternated), a one-row round goes from 19.2 to 18.9 ms on the GPU and draft-free decode from 51.3 to 52.1 tok/s; drafted decode goes from 89.4 to 90.1 tok/s greedy and from 68.3 to 68.9 sampled, all 48 replies are equal, and cold prompts are unchanged. `TF_METAL4_TIMELINE=n` logs the GPU time of every stage of n decode rounds of each row count, by kernel, and `TF_DSV41_ROUND_PROF=1` logs decode rounds' milliseconds by rows.
 - Docs: the GLM-5.3-Flash CUDA recipe's Verified copy drafts section lists, for one checkpoint at TP=2 with `--parallel 4`, the loads that `TF_GLM_COPIES=1` sped up and the ones it slowed, and says the default stays off (#3335). Thanks to @Bizuayeu.
 - Tests: the Qwen 3.8 27B Metal residency fixtures compile again on macOS after the DFlash2 target became a value (#3572).
 - Tests: the kernel contract's Llama `gemm_untransposed` control edits the `TF_GEMM_NAX_KERNEL` instance line again, so its planted fault fails as it should (#3157, thanks @gilby, who found and fixed it first).
