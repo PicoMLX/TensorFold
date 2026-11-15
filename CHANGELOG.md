@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- GLM-5.3-Flash on Metal: a decode window's rows share one set of dense-attention launches, its experts read two gate/up outputs a simdgroup up to 4 rows and four down outputs from 2 rows, and its hyper-connection boundaries spread each slice's sums over six threadgroups up to 4 rows, with the same values; on an M5 Ultra at a 400-token prompt a window takes 18.2 ms of GPU time instead of 19.4 at 2 rows and 25.8 ms instead of 27.7 at 4, and the 16-prompt bench decodes at 99.7 tok/s greedy instead of 93.1 and 90.4 sampled instead of 85.3, with the same tokens. Saved GLM prompt states on Metal are recomputed once after upgrading.
+
 - GLM-5.3-Flash on Metal: past 32,768 tokens a decode row's key blocks are chosen on many threadgroups (a floor sampled from the row marks candidates, one threadgroup chooses among them), the same lists as before; on an M5 Ultra, plain decode of a 90,044-token prompt takes 14.75 ms a token instead of 14.87 ms, with the same tokens.
 
 - GLM-5.3-Flash on Metal: decode windows of two or more rows run the KDA step's gates, short convolutions and norms for all their rows at once, then the recurrence, with the same values; on an M5 Ultra at 90,000 tokens a four-row round with three MTP drafts takes 31.0 ms of GPU time instead of 31.4 ms. Saved GLM prompt states on Metal are recomputed once after upgrading.
