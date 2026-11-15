@@ -4,6 +4,9 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- GLM-5.3-Flash on Metal: past 32,768 tokens a decode row's key blocks are chosen on many threadgroups (a floor sampled from the row marks candidates, one threadgroup chooses among them), the same lists as before; on an M5 Ultra, plain decode of a 90,044-token prompt takes 14.75 ms a token instead of 14.87 ms, with the same tokens.
+
+- GLM-5.3-Flash on Metal: decode windows of two or more rows run the KDA step's gates, short convolutions and norms for all their rows at once, then the recurrence, with the same values; on an M5 Ultra at 90,000 tokens a four-row round with three MTP drafts takes 31.0 ms of GPU time instead of 31.4 ms. Saved GLM prompt states on Metal are recomputed once after upgrading.
 - Docs: the GLM-5.3-Flash CUDA recipe's Verified copy drafts section lists, for one checkpoint at TP=2 with `--parallel 4`, the loads that `TF_GLM_COPIES=1` sped up and the ones it slowed, and says the default stays off (#3335). Thanks to @Bizuayeu.
 - Tests: the Qwen 3.8 27B Metal residency fixtures compile again on macOS after the DFlash2 target became a value (#3572).
 - Tests: the kernel contract's Llama `gemm_untransposed` control edits the `TF_GEMM_NAX_KERNEL` instance line again, so its planted fault fails as it should (#3157, thanks @gilby, who found and fixed it first).
