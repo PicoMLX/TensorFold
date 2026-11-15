@@ -2,6 +2,12 @@
 
 Each release's page on GitHub has its notes and measurements. See [the 1.0.0 release notes](RELEASE-NOTES-1.0.0.md) for the native binary's supported models and migration details.
 
+## Unreleased
+
+- GLM-5.3-Flash on Metal: past 32,768 tokens a decode row's key blocks are chosen on many threadgroups (a floor sampled from the row marks candidates, one threadgroup chooses among them), the same lists as before; on an M5 Ultra, plain decode of a 90,044-token prompt takes 14.75 ms a token instead of 14.87 ms, with the same tokens.
+
+- GLM-5.3-Flash on Metal: decode windows of two or more rows run the KDA step's gates, short convolutions and norms for all their rows at once, then the recurrence, with the same values; on an M5 Ultra at 90,000 tokens a four-row round with three MTP drafts takes 31.0 ms of GPU time instead of 31.4 ms. Saved GLM prompt states on Metal are recomputed once after upgrading.
+
 ## 1.2.9
 
 - Tests: the sessions writes test on real files does the same coverage with 40 requests at half the token sizes, so it no longer times out on busy CI runners (#3347).
