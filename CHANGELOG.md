@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- DeepSeek-V4.1 on Metal: the Engram row cache (`TF_DSV41_ENGRAM_CACHE`) now holds 4,194,304 records a layer by default (was 65,536; about 1.2 GiB a layer), so a prompt's Engram rows stay in memory for later requests and are no longer all read again from the SSD. Rows are the same bytes either way. On an M5 Ultra, after 32 varied ~2K-token prompts (prose, Zig and Python), 32% of the next 8 prompts' unique layer-1 rows came from the cache; without two-run chunks that cut a 2K prompt's GPU wait for its Engram rows from 160 to 107 ms on average.
+
 - DeepSeek-V4.1 on Metal: a cold prompt chunk now runs its first Engram span (layers 1-13) in two runs of rows. The first 30% of the chunk's rows have their layer-1 Engram rows read first and go through those layers while the rest are read, so the GPU no longer waits on the SSD after layer 0; the chunk's Engram row ids are hashed once, and layer 14's reads queue after the first commit. Each row's bits are unchanged and still equal decode's. On an M5 Ultra, a cold 2K prompt's encoder left the GPU idle 29 ms instead of 218 ms (its GPU time rose 63 ms for the second run), and cold prompts went from 716 to 741 tok/s at 1K tokens, 868 to 909 at 2K and 1,112 to 1,164 at 8K.
 
 - DeepSeek-V4.1 on Metal: decode attention widens bf16 keys through the bfloat type and loads each step's keys a step ahead up to 64 rows (was 2), with the same bits. On an M5 Ultra, release layer 2's decode attention takes 44 us at 3 and 4 rows (was 54 and 53) and 45 us at 1 row (was 47.5); served greedy decode goes from 89.5 to 90.3 tok/s and sampled from 72.8 to 73.4, with the same replies (#3360).
