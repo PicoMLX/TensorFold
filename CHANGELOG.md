@@ -3,6 +3,8 @@
 Each release's page on GitHub has its notes and measurements. See [the 1.0.0 release notes](RELEASE-NOTES-1.0.0.md) for the native binary's supported models and migration details.
 
 ## Unreleased
+- Qwen3.8-27B on Metal before M5: solo prompt passes use the configured frame's rows when prompt attention kernels are available; decoded spans, trees and prompts beside a live decoder retain their 128-row bound (#2916, fixes #2907).
+
 
 - Server: a grammar over 512 KiB is refused with HTTP 400 before it is compiled, so one oversized schema can no longer hold the grammar compiler for a minute (#3038).
 
