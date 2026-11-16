@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- CLI: `tensorfold chat MODEL` chats with a model in the terminal: it starts `tensorfold serve MODEL` on a free loopback port, streams each reply as it arrives, keeps the conversation, and stops the server when the chat ends (flags after `--` go to serve). `--url` chats with a server that is already running, the only mode on Windows, and a piped message gets one reply on stdout. `/bye`, `/clear`, `/system` and `/help` work in the chat, and Ctrl-C stops a reply and returns to the prompt. See [the chat command](docs/chat.md).
+
 - Docs: the GLM-5.3-Flash CUDA recipe's Verified copy drafts section lists, for one checkpoint at TP=2 with `--parallel 4`, the loads that `TF_GLM_COPIES=1` sped up and the ones it slowed, and says the default stays off (#3335). Thanks to @Bizuayeu.
 - Tests: the Qwen 3.8 27B Metal residency fixtures compile again on macOS after the DFlash2 target became a value (#3572).
 - Tests: the kernel contract's Llama `gemm_untransposed` control edits the `TF_GEMM_NAX_KERNEL` instance line again, so its planted fault fails as it should (#3157, thanks @gilby, who found and fixed it first).
