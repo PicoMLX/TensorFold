@@ -4,6 +4,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- HIP Flash Next: the MTP head's prompt rows write only the caches later reads, its cache pass skips the unused query product, and the next chunk is staged while the last forward runs; drafts and replies are unchanged. Thanks to @llstrk.
 - HIP Flash Next: a prompt's first token goes out before its last chunk's kept states are saved, kept-state copies pass through one pinned bounce buffer, and the state bytes are mapped on small pages; kept states and replies are unchanged. Thanks to @llstrk.
 - HIP Flash Next: the prompt-cache hooks live in their own file, and a prompt chunk now runs through every kept row its side buffers hold, saving each row's state aside; kept states and replies are unchanged. Thanks to @llstrk.
 - HIP Flash Next: on a GPU that shares the host's pages the default kept-prompt cache takes no more than the streams leave, while `--prompt-cache-gib` still sets it; replies are unchanged. Thanks to @llstrk.
