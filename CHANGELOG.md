@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- DeepSeek V4.1 on CUDA: in replay prefill (`TF_DSV41_PREFILL=replay`), a prompt of about 17 tokens or fewer gives the same reply on every pass on one boot again, because its short decoder boundaries no longer write the streams they read. Longer prompts and the default prefill are unchanged (#2715). Thanks to @BadAd84, who found the cause and the fix, @jayleaton for checking it on a GB10 pair, and @nuk3s and @OsakaTX for the reports and runs.
+
 - Docs: the GLM-5.3-Flash CUDA recipe's Verified copy drafts section lists, for one checkpoint at TP=2 with `--parallel 4`, the loads that `TF_GLM_COPIES=1` sped up and the ones it slowed, and says the default stays off (#3335). Thanks to @Bizuayeu.
 - Tests: the Qwen 3.8 27B Metal residency fixtures compile again on macOS after the DFlash2 target became a value (#3572).
 - Tests: the kernel contract's Llama `gemm_untransposed` control edits the `TF_GEMM_NAX_KERNEL` instance line again, so its planted fault fails as it should (#3157, thanks @gilby, who found and fixed it first).
