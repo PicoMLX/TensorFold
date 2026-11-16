@@ -106,7 +106,7 @@ pub fn share_states(p: *anyopaque, snaps: usize, parallel: u32, planned: ?kv.Bud
     if (n > 0) try readySnapshots(own, n * slot);
     const want = share_mod.advice(n, parallel, l, if (host) null else planned) orelse return;
     const why = "TF_KV_SHARE={d} keeps {d} states in the prompt cache's slots, under 4 a GLM stream at --parallel {d}: live streams evict each other's before a resume; ";
-    if (want.gib) |gib| std.log.warn(why ++ "{d} take TF_KV_SHARE={d} and --prompt-cache-gib {d}", .{ own.share, n, parallel, want.states, want.states, gib }) else std.log.warn(why ++ "the room holds {d} at any --prompt-cache-gib", .{ own.share, n, parallel, want.most });
+    if (want.gib) |gib| std.log.warn(why ++ "{d} take TF_KV_SHARE={d} and --prompt-cache-gib {d}", .{ own.share, n, parallel, want.states, want.states, gib }) else if (want.most >= want.states) std.log.warn(why ++ "{d} take TF_KV_SHARE={d}", .{ own.share, n, parallel, want.states, want.states }) else std.log.warn(why ++ "the room holds {d} at any --prompt-cache-gib", .{ own.share, n, parallel, want.most });
 }
 
 /// Rank 0, its pool attached: choose the expert form and publish MTP's window prices, timed or kept.
@@ -334,6 +334,7 @@ fn finishRank(a: OpenArgs) !Loaded {
     own.e.installGroup(&own.group);
     own.link = try follow.Link.init(gpa, ctx.d, &own.group.lib, own.group.comm, own.e.stream, try linkCapacity(cap, o.vision));
     errdefer own.link.deinit();
+    try @import("cuda_prompt_logprobs.zig").prepare(own.e);
     own.e.snap_setup = .{ .ptr = own, .run = readySnapshots };
     try @import("cuda_kv_host.zig").prepare(ctx.d, @import("cuda_state.zig").pageBytes(&own.e.w), own.e.capacity, own.e.w.config.kv_lora * 2);
     if (p.world > 1) try a.load_cache.finishAfter(.{ io, own.e.checkpoint_digest }, cuda.tp_watch.ready) else a.load_cache.finish();

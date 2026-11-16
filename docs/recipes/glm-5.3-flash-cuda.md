@@ -5,6 +5,7 @@ The native CUDA build serves GLM-5.3-Flash at tensor parallel over hosts: from N
 ([1.1.0](../../CHANGELOG.md#110), [the checkpoint](glm-5.3-flash.md#exl3)), and in [1.1.5](../../CHANGELOG.md#115) (#1050) from
 NVIDIA's FP4-Local checkpoint as stored and from XSFP4, which keeps FP4-Local's tensors outside the routed experts.
 Jammed XSFP4, in [1.2.3](../../CHANGELOG.md#123) ([#2041](https://github.com/ashhart/TensorFold/pull/2041)), holds those experts at block 32 in the `csf0_v1` form and loads the same way.
+Jammed XSFP4 NZ5, on `main` after 1.2.7 ([#2894](https://github.com/ashhart/TensorFold/pull/2894)), is Jammed XSFP4 refitted with E2M1's -0 code read as +5 (`NVFP4_NZ5`) and loads the same way.
 Rank 0 serves HTTP and the other ranks follow its steps, with MTP drafts, concurrent streams and kept prompt states.
 The [Python 0.6.6 recipe](glm-5.3-flash.md) and its `--tp`, `--rank` and `--master` flags belong to the frozen engine.
 
@@ -57,7 +58,8 @@ left after a 12.2 GiB reserve` and a 5.8 GiB prompt cache
   prompt's rows as the pool's pages instead of copying them into the cache, and that log line names it.
 - With KV pages (the default at two or more ranks), the pool sets the windows the room holds aside before the prompt
   cache, which gets what they leave of its 16 GiB. `--prompt-cache-gib N` sets N GiB aside first, after the engine's
-  own window and a fixed part and page for each other stream, and the pool takes the rest.
+  own window and a fixed part and page for each other stream, and the pool takes the rest. `TF_KV_SHARE=n` sets its n
+  kept states' slots aside in the same place.
 - `TF_GLM_PROMPT_TAIL=1` keeps a prompt that names no history, as a `/v1/completions` request's, at its last prompt
   chunk start, as a chat keeps its history's, so the same prompt or a longer one resumes there. Those states share the
   prompt cache's budget with chat states, least recently used out first, so long raw prompts between two chat turns can
@@ -77,9 +79,11 @@ left after a 12.2 GiB reserve` and a 5.8 GiB prompt cache
   `TF_GLM_KV_HOST_GIB` sizes the host pages (one full window unasked); `TF_GLM_KV_HOST_SHARED=1` gives the ranks of
   one host a single copy in `/dev/shm`. Checked on two RTX PRO 6000 Blackwell cards at TP=2.
 - `TF_KV_SHARE=n` (with KV pages, 64 at most) keeps prompts' rows as the pool's pages, and the startup plan sets aside
-  a slot for each of the n kept states' other parts in the prompt cache, as many as the cache holds; the rest of the
-  cache goes to the pool's pages. `--prompt-cache-gib N` bounds them: the startup line names the slots, and when the
-  cache holds fewer than n, how many it holds and the `--prompt-cache-gib` that holds all n.
+  a slot for each of the n kept states' other parts first, where an asked cache goes, as many as fit there; the rest of
+  the prompt cache goes to the pool's pages after the windows. Where the room would hold one more whole window, the
+  slots come out of it, so the pool holds fewer pages than it would without them. A named `--prompt-cache-gib N`
+  bounds the slots too: the startup line names them, and when fewer than n fit, how many, and the
+  `--prompt-cache-gib` that holds all n where one does.
 - `TF_GLM_CHUNK_SOLO=4096` on every rank (opt-in) lets a prompt pass take 4,096 rows while no other stream is decoding.
   Unset or `2048`, every pass takes 2,048 rows and nothing extra is held. See [Prompt chunk size](#prompt-chunk-size).
 - `TF_GLM_REQUEST_STARTS=1` on rank 0 (opt-in, off by default) cuts each prompt pass at the request's message starts
