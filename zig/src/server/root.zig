@@ -43,6 +43,7 @@ test {
     _ = @import("idle_unload.zig");
     _ = @import("idle_unload_test.zig");
     _ = @import("wait_reason_test.zig");
+    _ = @import("wait_reason_ledger_test.zig");
     _ = @import("name_priority_http_test.zig");
     _ = @import("ws_frame.zig");
     _ = @import("ws_upgrade.zig");
@@ -207,6 +208,7 @@ test {
     _ = @import("slide_recheck.zig");
     _ = @import("slide_forget.zig");
     _ = @import("slide_forget_test.zig");
+    _ = @import("slide_write_cause_test.zig");
     _ = @import("slide_forget_many_test.zig");
     _ = @import("slide_supplied.zig");
     _ = @import("slide_questions_test.zig");
@@ -292,6 +294,7 @@ test {
     _ = @import("penalty_request_test.zig");
     _ = @import("logit_bias_request_test.zig");
     _ = @import("deepseek_fixture_test.zig");
+    _ = @import("uocr_chat_test.zig");
 }
 
 test {
