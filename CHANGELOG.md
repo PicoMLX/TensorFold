@@ -4,6 +4,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Server: a reply can continue the conversation's final assistant message, so a client can start it with `{` for JSON or with an answer's first words. `/v1/messages` now continues a trailing assistant message as Messages' prefill does, where it opened a new turn before, and `/v1/chat/completions` does so with `"continue_final_message": true`. The response holds only the continuation and usage counts the prefill. Trailing whitespace on Messages, tool calls, thinking on and a template that rewrites the message get HTTP 400 by name.
 - Flash Next at TP=2 on CUDA: the draft head, head-group and rollback passes replay as CUDA graphs on both ranks, and one-row split lanes skip their interleave copies; with Qwen3.8-Flash-Next NVFP4 and MTP at TP=2 on GB10s, decode is 1.2-1.4% faster and prompts 0.5-2.1% faster, with identical replies (#2837, for #2835).
 - Intel XPU: Qwen3.8-27B's prompt `gdn_out` kernel keeps its scale bookkeeping in cheaper exact forms, for 22.6% less kernel time on an Arc Pro B70 (734 to 569 ms over a 32K prompt) with byte-identical outputs, its fallback included (#2921, refs #2859). Thanks to @dinadur.
 - CI: the no-GPU host tests run as two parallel jobs, `zig` and `zig-b`, and a build check fails if any host check is in both or neither; a local `zig build test-host` still runs all of them (#3474).

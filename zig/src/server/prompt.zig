@@ -34,20 +34,9 @@ pub fn renderIds(srv: *Server, cx: *Cx, messages: Value, tools: []const Value, t
 }
 
 pub fn renderRequest(srv: *Server, cx: *Cx, messages: Value, tools: []const Value, thinking: bool, effort: ?[]const u8, generation: bool, require_off: bool) errors.Refused![]const u32 {
-    const messages_in = if (srv.text.vtable.format == .kimi) messages else try messages_mod.normalizeWith(cx, messages, srv.late_system, srv.needs_user_after_tool, srv.media());
-    const normalized = if (srv.text.vtable.format == .kimi or srv.text.native_deepseek) messages_in else try messages_mod.toolArguments(cx, messages_in);
+    const normalized = try templateMessages(srv, cx, messages);
     var problem: []const u8 = "";
-    const options: model_text.RenderOptions = .{
-        .tools = if (tools.len > 0) Value{ .array = @constCast(tools) } else null,
-        .add_generation_prompt = generation,
-        .enable_thinking = thinking,
-        .reasoning_effort = if (thinking) effort else cx.named_effort, // off: only an effort the request named
-        .clear_thinking = cx.clear_thinking,
-        .tool_choice = cx.template_fields.get("tool_choice"),
-        .response_format = cx.template_fields.get("response_format"),
-        .images = srv.info.vision != null,
-    };
-    const rendered = render(srv, cx.a, normalized, options, &problem) catch |e| switch (e) {
+    const rendered = render(srv, cx.a, normalized, renderOptions(srv, cx, tools, thinking, effort, generation), &problem) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Template => return cx.fail(.request, "{s}", .{problem}),
     };
@@ -94,16 +83,42 @@ pub fn thinkingSwitch(srv: *Server) std.mem.Allocator.Error!bool {
     return true;
 }
 
+/// The messages as this template reads them: normalized for it, with call arguments as objects (not Kimi's).
+pub fn templateMessages(srv: *Server, cx: *Cx, messages: Value) errors.Refused!Value {
+    const messages_in = if (srv.text.vtable.format == .kimi) messages else try messages_mod.normalizeWith(cx, messages, srv.late_system, srv.needs_user_after_tool, srv.media());
+    return if (srv.text.vtable.format == .kimi or srv.text.native_deepseek) messages_in else try messages_mod.toolArguments(cx, messages_in);
+}
+
+/// The template switches a request renders with.
+pub fn renderOptions(srv: *const Server, cx: *const Cx, tools: []const Value, thinking: bool, effort: ?[]const u8, generation: bool) model_text.RenderOptions {
+    return .{
+        .tools = if (tools.len > 0) Value{ .array = @constCast(tools) } else null,
+        .add_generation_prompt = generation,
+        .enable_thinking = thinking,
+        .reasoning_effort = if (thinking) effort else cx.named_effort, // off: only an effort the request named
+        .clear_thinking = cx.clear_thinking,
+        .tool_choice = cx.template_fields.get("tool_choice"),
+        .response_format = cx.template_fields.get("response_format"),
+        .images = srv.info.vision != null,
+    };
+}
+
 const RenderedIds = struct { ids: []u32, closed: bool };
 
-/// The template's ids for `messages`; with image input, a marker the text spells is ordinary text (images.zig).
+/// The template's ids for `messages`, and whether a closing suffix the template wrote ends them.
 fn render(srv: *Server, a: std.mem.Allocator, messages: Value, options: model_text.RenderOptions, problem: *[]const u8) model_text.Error!RenderedIds {
+    const rendered = try renderText(srv, a, messages, options, problem);
+    return .{ .ids = try rendered.encode(srv.text, a, problem), .closed = templateClosed(rendered, srv.markers.close) };
+}
+
+/// The template's text for `messages`; with image input, a marker the text spells is ordinary text (images.zig).
+pub fn renderText(srv: *Server, a: std.mem.Allocator, messages: Value, options: model_text.RenderOptions, problem: *[]const u8) model_text.Error!model_text.Rendered {
     var rendered = try srv.text.render(a, messages, options, problem);
     if (srv.info.vision) |v| if (v.video) |o| if (o.video_text.len > 0) {
         const word = try srv.text.tokenString(a, o.video_token);
         rendered = try rendered.replaceTemplate(a, o.video_text, word);
     };
-    return .{ .ids = try rendered.encode(srv.text, a, problem), .closed = templateClosed(rendered, srv.markers.close) };
+    return rendered;
 }
 
 /// The template's generation prompt (thinking on or off): what a probe conversation renders past its history.
@@ -151,6 +166,7 @@ pub fn prepare(srv: *Server, cx: *Cx, input: chat.Input, thinking: bool, effort:
         .ids => |ids| return .{ .ids = ids },
     };
     cx.template_fields = input.fields;
+    if (input.prefill) return @import("prefill.zig").prepare(srv, cx, input, thinking, effort);
     const prompt = try renderRequest(srv, cx, input.messages, input.tools, thinking, effort, true, input.explicit_off);
     const history = try renderIds(srv, cx, input.messages, input.tools, thinking, effort, false);
     var history_len: usize = 0;
