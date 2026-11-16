@@ -302,7 +302,7 @@ test {
     _ = @import("thinking_request_test.zig");
     _ = @import("audio_out.zig");
     _ = @import("flac.zig");
-    _ = @import("speech_format_http_test.zig");
+    if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_format_http_test.zig"); // over a Unix socket pair
     _ = @import("ocr/types_test.zig");
     _ = @import("ocr/geometry_test.zig");
     _ = @import("ocr/markdown_test.zig");
