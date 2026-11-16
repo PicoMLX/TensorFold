@@ -3,7 +3,7 @@ const std = @import("std");
 const sys = @import("sys.zig");
 
 pub const Error = error{InvalidEnvironment};
-pub const Scope = enum { common, cuda, metal, xpu, slide, hooks, dsv41, gemma4, drama3, glm, flashnext };
+pub const Scope = enum { common, cuda, metal, xpu, slide, hooks, dsv41, gemma4, drama3, glm, flashnext, chat };
 pub const Kind = enum { u32, u64, size, percent, positive, device, segments, mib, bit_width, word, prompt, flag, toggle, real, positive_real, signed_real, range, path };
 pub const Rule = struct {
     name: [:0]const u8,
@@ -205,6 +205,7 @@ pub const rules = [_]Rule{
     .{ .name = "TF_FLASHNEXT_KV_PAGE_TEST", .scope = .flashnext, .kind = .size, .forms = "a page size the kernels take, whole blocks of the indexer's ratio up to the window (unset: off)" },
     .{ .name = "TF_FLASHNEXT_CONFIDENCE", .scope = .flashnext, .kind = .signed_real, .forms = "a finite number (default -0.4)" },
     .{ .name = "TF_FLASHNEXT_PROMPT", .scope = .flashnext, .kind = .word, .words = &.{"rows"}, .forms = "rows for the rows path (unset or blank keeps the plain path)" },
+    .{ .name = "TENSORFOLD_API_KEY", .scope = .chat, .kind = .path, .trim = " \t\n\r\x0b\x0c", .forms = "API keys split by commas, without control characters (checked here by tensorfold chat --url)" },
 };
 
 pub fn rule(name: []const u8) Rule {
@@ -368,6 +369,7 @@ pub const Flags = struct {
     drama3: bool = false,
     glm: bool = false,
     flashnext: bool = false,
+    chat: bool = false,
     device: ?u32 = null,
     segments: ?u32 = null,
     carveout: bool = false,
@@ -385,6 +387,7 @@ pub const Flags = struct {
             .drama3 => f.drama3,
             .glm => f.glm,
             .flashnext => f.flashnext,
+            .chat => f.chat,
         };
     }
 };
