@@ -3,6 +3,8 @@
 Each release's page on GitHub has its notes and measurements. See [the 1.0.0 release notes](RELEASE-NOTES-1.0.0.md) for the native binary's supported models and migration details.
 
 ## Unreleased
+- GLM-5.3-Flash on CUDA: shared rounds batch MTP drafts across streams while retaining each stream's sampling rule (#2856).
+- GLM-5.3-Flash on CUDA: shared rounds batch MTP drafts across streams with each stream's sampling rule (#2856).
 
 - Server: a grammar over 512 KiB is refused with HTTP 400 before it is compiled, so one oversized schema can no longer hold the grammar compiler for a minute (#3038).
 
