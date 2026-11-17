@@ -4,7 +4,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
-- Serve: the background prefill of a chat reply's next turn now renders the reply with its reasoning when the client sends reasoning back, as agent clients such as omp do, so that turn resumes past the reply instead of before it. With thinking on, the guess left the reasoning out and missed every time: in one omp session with Qwen3.8-Flash-Next on an M5 Ultra, requests waited 40.8 s in total behind background passes they then redid. In an omp tool loop the next requests now resume at the background pass's end and prefill only the new tool result. A client whose history has no reasoning gets the old guess.
+- Serve: the background prefill of a chat reply's next turn now renders the reply with its reasoning when the client sends reasoning back, as agent clients such as omp do, so that turn resumes past the reply instead of before it. With thinking on, the guess left the reasoning out and missed every time: in one omp session with Qwen3.8-Flash-Next on an M5 Ultra, requests waited 40.8 s in total behind background passes they then redid. In an omp tool loop the next requests now resume at the background pass's end and prefill only the new tool result. A client's first follow-up keeps the old guess; later turns follow what the history shows (#3264).
 
 - Docs: the README is now a short quick start and docs list; setup, serve flags and model tables moved to the new run guide and supported models pages, and the Zig preview and 1.0.0 release notes moved into docs/ (#3170). Thanks to @jayleaton.
 
