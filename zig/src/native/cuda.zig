@@ -47,8 +47,7 @@ const LoneRun = *const fn (ctx: *anyopaque, s: *lanes.Stream, hooks: *anyopaque,
 threadlocal var bound: ?*const cuda.Context = null;
 const failed_load = @import("cuda_load_gpu.zig");
 const Gpu = failed_load.Gpu;
-/// One loaded model behind the lane host: everything the engine thread reads lives here.
-pub const Host = struct {
+pub const Host = struct { // One loaded model behind the lane host: everything the engine thread reads lives here.
     gpa: Allocator,
     gpu: ?*Gpu, // null in host tests: no context to bind
     family: *anyopaque,
