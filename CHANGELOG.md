@@ -3,6 +3,7 @@
 Each release's page on GitHub has its notes and measurements. See [the 1.0.0 release notes](RELEASE-NOTES-1.0.0.md) for the native binary's supported models and migration details.
 
 ## Unreleased
+- Qwen 3.5 on CUDA: kept prompt states and disk recall reuse freed pinned buffers of the same size (#2841).
 
 - Server: a grammar over 512 KiB is refused with HTTP 400 before it is compiled, so one oversized schema can no longer hold the grammar compiler for a minute (#3038).
 
