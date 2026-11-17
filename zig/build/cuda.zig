@@ -99,6 +99,7 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     runner.addImport("nemotron", mods.nemotron);
     runner.addImport("qwen35", mods.qwen35);
     runner.addImport("flashnext", flashnextModule(b, target, optimize, cuda, mods.core, mods.lanes, mods.qwen_vision, mods.api));
+    runner.addImport("lfm2_moe", native.engines.import_table.get("lfm2_moe_cuda").?);
     runner.addImport("lfm2", lfm2Module(b, target, optimize, cuda, mods.core));
     runner.addImport("radio", mods.radio);
     const exlr8 = exlr8_build.coreAlias(b, target, optimize, mods.core);

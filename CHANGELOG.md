@@ -3,7 +3,7 @@
 Each release's page on GitHub has its notes and measurements. See [the 1.0.0 release notes](RELEASE-NOTES-1.0.0.md) for the native binary's supported models and migration details.
 
 ## Unreleased
-- Prompt cache: Nemotron and LFM2 MoE on CUDA keep a prompt state at every message start by default, because their prefill rows are bit-identical wherever a chunk is cut; an edit to an earlier turn now re-reads from that message, with replies unchanged (#3617).
+- Prompt cache: Nemotron and LFM2 MoE on CUDA offer request-start snapshot hooks by default, subject to the existing cache budget, slots and admission promises (#3617).
 
 - Server: a grammar over 512 KiB is refused with HTTP 400 before it is compiled, so one oversized schema can no longer hold the grammar compiler for a minute (#3038).
 
