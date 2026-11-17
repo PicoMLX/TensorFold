@@ -183,17 +183,8 @@ pub const LaneHost = struct {
         .configure_stall = @import("lane_host_stall.zig").configure,
     };
 
-    const scored_vtable: Engine.VTable = blk: {
-        var v = plain_vtable;
-        v.score = scoring.score;
-        break :blk v;
-    };
-
-    const decided_vtable: Engine.VTable = blk: {
-        var v = scored_vtable;
-        v.decide = scoring.decide;
-        break :blk v;
-    };
+    const scored_vtable = @import("lane_host_vtable.zig").scoring(plain_vtable, scoring.score, null);
+    const decided_vtable = @import("lane_host_vtable.zig").scoring(plain_vtable, scoring.score, scoring.decide);
 
     /// The family's queue as a keepalive target, when it set one.
     fn keepaliveFn(ctx: *anyopaque) ?api.keepalive.Target {
