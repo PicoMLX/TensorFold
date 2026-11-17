@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Nemotron Metal: retain completed prompt state on cancellation through the shared interrupted keep (#3618).
+
 - Qwen3.8-27B on Metal keeps completed prompt progress when a request is cancelled and rewinds slot 0 to its saved prompt state after a cancelled reply, so a follow-up can resume without using the cancelled reply's advanced recurrence (#3618).
 
 - Docs: the GLM-5.3-Flash CUDA recipe's Verified copy drafts section lists, for one checkpoint at TP=2 with `--parallel 4`, the loads that `TF_GLM_COPIES=1` sped up and the ones it slowed, and says the default stays off (#3335). Thanks to @Bizuayeu.
