@@ -470,8 +470,7 @@ pub const Forward = struct {
         return i;
     }
 
-    /// A chunk's embedding, from p_ids.
-    pub fn chunkBegin(f: *const Forward, w: *Walk) !void {
+    pub fn chunkBegin(f: *const Forward, w: *Walk) !void { // A chunk's embedding, from p_ids.
         const b = f.b;
         try f.embed(b.p_ids, b.emb, w.rows);
         if (f.vision) |v| try v.splice(f.ops.s, w.pos, w.pos + w.rows, b.emb);
@@ -564,8 +563,7 @@ pub const Forward = struct {
                 w.delta = .dense;
             } else {
                 try f.experts(blk.moe, w.rows, true);
-                if (f.usage) |u| if (blk.moe.pocket) |p| if (p.used > 0)
-                    try u.read(f.ops, i, b.pocket, p.used);
+                if (f.usage) |u| if (blk.moe.pocket) |p| if (p.used > 0) try u.read(f.ops, i, b.pocket, p.used);
                 w.delta = if (blk.moe.bolt != null) .dense else .moe;
             },
         }
