@@ -3,6 +3,7 @@
 Each release's page on GitHub has its notes and measurements. See [the 1.0.0 release notes](RELEASE-NOTES-1.0.0.md) for the native binary's supported models and migration details.
 
 ## Unreleased
+- Tools: add tf-h3-image to compare MiniMax-H3-Image Metal transformer steps with exported picture cases (#2766).
 
 - Server: a grammar over 512 KiB is refused with HTTP 400 before it is compiled, so one oversized schema can no longer hold the grammar compiler for a minute (#3038).
 
