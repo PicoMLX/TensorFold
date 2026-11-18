@@ -11,6 +11,12 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, api: *std.Build.Modu
         .link_libc = true,
         .imports = &.{ .{ .name = "engine_api", .module = api }, .{ .name = "native_engines", .module = engines }, .{ .name = "tokenizer", .module = engines.import_table.get("tokenizer").? }, .{ .name = "hub", .module = hub } },
     }) });
+    // Git state can change while Zig's configure graph stays cached.
+    const stamp = b.addSystemCommand(&.{"sh"});
+    stamp.addFileArg(b.path("zig/build/pico_build_info.sh"));
+    stamp.setCwd(b.path("."));
+    stamp.has_side_effects = true;
+    lib.root_module.addAnonymousImport("pico_build_info", .{ .root_source_file = stamp.addOutputFileArg("build-info.json") });
     const install = b.addInstallArtifact(lib, .{ .dest_dir = .{ .override = .{ .custom = "native/lib" } } });
     b.step("pico-lib", "libPicoTensorFold.dylib with the Metal engines into zig-out/native/lib (bundles: -Dcpu=apple_m1)").dependOn(&install.step);
 }

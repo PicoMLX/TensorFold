@@ -209,6 +209,12 @@ export fn pico_tf_abi_version() i32 {
     return 3;
 }
 
+/// Source provenance as static UTF-8 JSON, when built from a Git checkout.
+export fn pico_tf_build_info_v1() ?[*:0]const u8 {
+    const info = @embedFile("pico_build_info");
+    return if (info.len == 0) null else info;
+}
+
 export fn pico_tf_can_serve(model_dir: ?[*:0]const u8) i32 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
