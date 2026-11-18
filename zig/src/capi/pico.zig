@@ -193,13 +193,12 @@ fn readJson(a: Allocator, io: std.Io, dir: []const u8, name: []const u8) std.jso
     return std.json.parseFromSliceLeaky(std.json.Value, a, bytes, .{}) catch .null;
 }
 
-/// A registered family reads the folder's format (MLX affine bits and group, or bf16) and it holds a weights file.
+/// A registered family serves the folder's weight format (`format`) and the folder holds a weights file.
 fn servable(a: Allocator, io: std.Io, dir: []const u8) bool {
     const family = hub.family(hub.modelType(a, io, dir)) orelse return false;
-    var name: [32]u8 = undefined;
-    const format = if (hub.quantization(a, io, dir)) |q| std.fmt.bufPrint(&name, "mlx-q{d}g{d}", .{ q.bits, q.group }) catch return false else "bf16";
+    const name = format(a, io, dir) catch return false;
     for (family.formats) |f| {
-        if (std.mem.eql(u8, f, format)) break;
+        if (std.mem.eql(u8, f, name)) break;
     } else return false;
     var d = std.Io.Dir.cwd().openDir(io, dir, .{ .iterate = true }) catch return false;
     defer d.close(io);
@@ -210,6 +209,67 @@ fn servable(a: Allocator, io: std.Io, dir: []const u8) bool {
         if (st.size > 0) return true;
     }
     return false;
+}
+
+/// The folder's weight format in the engine registry's words (native/metal.zig `families`), from its metadata alone:
+/// an EXLR8 manifest; MLX's `quantization` (affine bits and group, or its named mode); else `quantization_config`
+/// (the model's or its text_config's) as compressed-tensors, modelopt or block FP8 write it; else bf16.
+fn format(a: Allocator, io: std.Io, dir: []const u8) ![]const u8 {
+    const manifest = try std.fs.path.join(a, &.{ dir, "manifests", "exlr8-manifest-home.json" }); // glm_dsa's
+    if (std.Io.Dir.cwd().access(io, manifest, .{})) |_| return "exlr8" else |_| {}
+    const text = @import("checkpoint_config").optional(a, io, dir) orelse return error.NoConfig;
+    const root = try std.json.parseFromSliceLeaky(std.json.Value, a, text, .{});
+    if (root != .object) return error.NoConfig;
+    if (get(root, "quantization")) |q| return mlx(a, q);
+    const q = get(root, "quantization_config") orelse if (get(root, "text_config")) |t| get(t, "quantization_config") orelse return "bf16" else return "bf16";
+    const method = string(q, "quant_method") orelse return mlx(a, q); // MLX writes its block under this name too
+    if (std.mem.eql(u8, method, "compressed-tensors")) {
+        const packed_as = string(q, "format") orelse return error.UnknownFormat;
+        if (std.mem.eql(u8, packed_as, "mxfp4-pack-quantized")) return "mxfp4"; // Kimi K3's
+        if (!std.mem.eql(u8, packed_as, "pack-quantized")) return error.UnknownFormat;
+        // integer groups, as the Llama engine reads them (families/llama/config.zig)
+        const groups = get(q, "config_groups") orelse return error.UnknownFormat;
+        if (groups != .object or groups.object.count() != 1) return error.UnknownFormat;
+        const w = get(groups.object.values()[0], "weights") orelse return error.UnknownFormat;
+        const kind = string(w, "type") orelse return error.UnknownFormat;
+        if (!std.mem.eql(u8, kind, "int")) return error.UnknownFormat;
+        return std.fmt.allocPrint(a, "compressed-tensors-int{d}-g{d}", .{ integer(w, "num_bits") orelse return error.UnknownFormat, integer(w, "group_size") orelse return error.UnknownFormat });
+    }
+    if (std.mem.eql(u8, method, "modelopt")) {
+        const algo = string(q, "quant_algo") orelse return error.UnknownFormat;
+        if (std.ascii.eqlIgnoreCase(algo, "FP8")) return "modelopt-fp8";
+        if (std.ascii.eqlIgnoreCase(algo, "NVFP4") or std.ascii.eqlIgnoreCase(algo, "W4A16_NVFP4")) return "modelopt-nvfp4";
+        if (std.ascii.eqlIgnoreCase(algo, "MIXED_PRECISION")) return "modelopt-mixed";
+        return error.UnknownFormat;
+    }
+    if (std.mem.eql(u8, method, "fp8")) {
+        const block = get(q, "weight_block_size") orelse return error.UnknownFormat;
+        if (block != .array or block.array.items.len != 2) return error.UnknownFormat;
+        for (block.array.items) |side| if (side != .integer or side.integer != 128) return error.UnknownFormat;
+        return "fp8-block128";
+    }
+    return error.UnknownFormat;
+}
+
+/// An MLX quantization block: `mlx-q{bits}g{group}` when affine (group 32 unless named, as `tensorfold info` reads it).
+fn mlx(a: Allocator, q: std.json.Value) ![]const u8 {
+    if (string(q, "mode")) |mode| if (!std.mem.eql(u8, mode, "affine")) return mode;
+    const bits = integer(q, "bits") orelse return error.UnknownFormat;
+    return std.fmt.allocPrint(a, "mlx-q{d}g{d}", .{ bits, integer(q, "group_size") orelse 32 });
+}
+
+fn get(v: std.json.Value, key: []const u8) ?std.json.Value {
+    return if (v == .object) v.object.get(key) else null;
+}
+
+fn string(v: std.json.Value, key: []const u8) ?[]const u8 {
+    const s = get(v, key) orelse return null;
+    return if (s == .string) s.string else null;
+}
+
+fn integer(v: std.json.Value, key: []const u8) ?u64 {
+    const n = get(v, key) orelse return null;
+    return if (n == .integer and n.integer > 0) @intCast(n.integer) else null;
 }
 
 /// `text` into a C buffer of `cap` bytes, cut to fit and NUL-terminated when there is room for one.
