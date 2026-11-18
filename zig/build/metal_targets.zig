@@ -454,6 +454,7 @@ pub fn metalTargets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     flashnext_checks.targets(b, target, optimize, metal, engine);
 
     _ = nativeServer(b, target, optimize, metal, engine, mods.living, api, engines, build_options, test_step);
+    @import("pico_lib.zig").add(b, target, api, engines);
 
     const cluster_metal = b.createModule(.{
         .root_source_file = b.path("zig/src/cluster/metal_sink.zig"),
