@@ -17,6 +17,7 @@ var threaded: std.Io.Threaded = .init_single_threaded;
 const Callback = *const fn (ctx: ?*anyopaque, tokens: ?[*]const i32, n: i32, status: i32, usage: ?*const [6]i64) callconv(.c) void;
 
 /// One loaded checkpoint; requests in flight are in `jobs` until their last callback has returned.
+/// Close waits for those and for every exported call still running on it (`calls`), so neither reads a freed handle.
 const Handle = struct {
     arena: std.heap.ArenaAllocator, // what the open read and the engine was handed: the folder, its type, the end tokens
     opened: api.Opened = undefined,
@@ -27,6 +28,7 @@ const Handle = struct {
     idle: std.Io.Condition = .init,
     jobs: std.ArrayList(*Job) = .empty,
     next: api.Id = 1, // the engine's names are never reused, so a late cancel cannot reach a newer request
+    calls: u32 = 0, // exported calls between `enter` and `leave`
     closing: bool = false,
 
     fn load(h: *Handle, model_dir: []const u8, problem: *[]const u8) !void {
@@ -65,6 +67,22 @@ const Handle = struct {
 
     fn unlock(h: *Handle) void {
         h.mutex.unlock(threaded.io());
+    }
+
+    /// An exported call takes a hold on the handle for its whole run; false once close has begun (the call refuses).
+    fn enter(h: *Handle) bool {
+        h.lock();
+        defer h.unlock();
+        if (h.closing) return false;
+        h.calls += 1;
+        return true;
+    }
+
+    fn leave(h: *Handle) void {
+        h.lock();
+        h.calls -= 1;
+        if (h.calls == 0) h.idle.broadcast(threaded.io());
+        h.unlock();
     }
 
     /// The live request the caller named `id`; the caller holds the lock.
@@ -254,7 +272,7 @@ export fn pico_tf_close(handle: ?*Handle) void {
     h.unlock();
     for (ids.items) |id| h.opened.engine.cancel(id);
     h.lock();
-    while (h.jobs.items.len > 0) h.idle.waitUncancelable(io, &h.mutex);
+    while (h.jobs.items.len > 0 or h.calls > 0) h.idle.waitUncancelable(io, &h.mutex);
     h.unlock();
     h.opened.close(h.opened.ctx);
     h.jobs.deinit(gpa);
@@ -266,6 +284,8 @@ export fn pico_tf_close(handle: ?*Handle) void {
 export fn pico_tf_tokenize(handle: ?*Handle, text: ?[*]const u8, len: i32, out: ?[*]i32, cap: i32) i32 {
     const h = handle orelse return -1;
     if (len < 0 or (text == null and len > 0)) return -1;
+    if (!h.enter()) return -1;
+    defer h.leave();
     const bytes: []const u8 = if (text) |t| t[0..@intCast(len)] else &.{};
     if (!std.unicode.utf8ValidateSlice(bytes)) return -1;
     const ids = h.tok.encode(gpa, bytes) catch return -1;
@@ -278,6 +298,8 @@ export fn pico_tf_tokenize(handle: ?*Handle, text: ?[*]const u8, len: i32, out: 
 export fn pico_tf_detokenize(handle: ?*Handle, tokens: ?[*]const i32, n: i32, out: ?[*]u8, cap: i32) i32 {
     const h = handle orelse return -1;
     if (n < 0 or (tokens == null and n > 0)) return -1;
+    if (!h.enter()) return -1;
+    defer h.leave();
     const ids: []const i32 = if (tokens) |t| t[0..@intCast(n)] else &.{};
     for (ids) |id| if (id < 0) return -1;
     const text = h.tok.decode(gpa, @ptrCast(ids), false) catch return -1;
@@ -291,6 +313,9 @@ export fn pico_tf_submit(handle: ?*Handle, id: u64, prompt: ?[*]const i32, n: i3
     if (prompt == null or cb == null or n <= 0) return 1;
     const ids: []const i32 = prompt.?[0..@intCast(n)];
     for (ids) |t| if (t < 0) return 1;
+    // held until the last look at the handle below: the request may finish, and a close end, before that look
+    if (!h.enter()) return 1;
+    defer h.leave();
     // the server's preflight: the prompt leaves room for a reply, and the reply ends where the window does
     const window = h.info.context_window;
     if (window > 0 and ids.len >= window) return 1;
@@ -342,6 +367,8 @@ export fn pico_tf_submit(handle: ?*Handle, id: u64, prompt: ?[*]const i32, n: i3
 
 export fn pico_tf_cancel(handle: ?*Handle, id: u64) void {
     const h = handle orelse return;
+    if (!h.enter()) return; // a close cancels every request itself
+    defer h.leave();
     h.lock();
     const job = h.find(id);
     if (job) |j| j.cancelled = true;
@@ -352,6 +379,8 @@ export fn pico_tf_cancel(handle: ?*Handle, id: u64) void {
 
 export fn pico_tf_memory(handle: ?*Handle, out: ?*[3]i64) i32 {
     const h = handle orelse return 1;
+    if (!h.enter()) return 1;
+    defer h.leave();
     const m = h.opened.engine.memory(false) orelse return 1;
     const counts = out orelse return 1;
     for (counts, [_]u64{ m.active, m.cache, m.peak }) |*slot, bytes| slot.* = std.math.cast(i64, bytes) orelse return 1;
