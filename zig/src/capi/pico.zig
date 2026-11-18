@@ -140,10 +140,23 @@ const Text = union(enum) {
     /// Caller frees with `gpa`.
     fn decode(t: *const Text, ids: []const u32) ![]u8 {
         return switch (t.*) {
-            .hf => |*tok| tok.decode(gpa, ids, false),
+            .hf => |*tok| if (tok.decoder) |*d| (if (d.tokenLocal()) raw(tok, ids) else tok.decode(gpa, ids, false)) else tok.decode(gpa, ids, false),
             // the raw bytes (its own allocator is `gpa`): decodeAlloc would replace a character split between replies
             .kimi => |kimi| kimi.tok.decode(ids),
         };
+    }
+
+    /// Each id's exact bytes (specials as their text), where the decoder reads every token alone (ByteLevel,
+    /// ByteFallback): `decode` would put U+FFFD in place of a character split between two replies.
+    fn raw(tok: *const tokenizer.Tokenizer, ids: []const u32) ![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(gpa);
+        for (ids) |id| {
+            const piece = (try tok.tokenBytes(gpa, id)) orelse return error.NotTokenLocal;
+            defer gpa.free(piece);
+            try out.appendSlice(gpa, piece);
+        }
+        return out.toOwnedSlice(gpa);
     }
 
     fn deinit(t: *Text) void {
@@ -555,4 +568,29 @@ test "pico lib: a Kimi checkpoint tokenizes and decodes with its release tiktoke
     try std.testing.expectEqual(@as(i32, 2), pico_tf_tokenize(h, e.ptr, e.len, &ids, ids.len));
     try std.testing.expectEqual(@as(i32, 1), pico_tf_detokenize(h, &ids, 1, &out, out.len));
     try std.testing.expectEqual(@as(u8, 0xc3), out[0]);
+}
+
+test "pico lib: a byte-level reply cut inside a character detokenizes to its raw bytes, specials to their text" {
+    const h = try gpa.create(Handle);
+    h.* = .{ .arena = .init(gpa) };
+    h.text = .{ .hf = .{ .allocator = gpa, .vocab = .init(gpa), .id_to_token = .{ .allocator = gpa }, .model = .empty(.bpe), .decoder = .byte_level } };
+    defer {
+        h.text.hf.specials.deinit(gpa);
+        h.text.deinit();
+        h.arena.deinit();
+        gpa.destroy(h);
+    }
+    // "é" as two byte-level pieces, as tokenizer_test.zig's raw ByteLevel case writes them, and one special token
+    try h.text.hf.id_to_token.put(0, "\u{c3}");
+    try h.text.hf.id_to_token.put(1, "\u{a9}");
+    try h.text.hf.id_to_token.put(2, "<|im_start|>");
+    try h.text.hf.specials.put(gpa, "<|im_start|>", {});
+    var out: [32]u8 = undefined;
+    try std.testing.expectEqual(@as(i32, 1), pico_tf_detokenize(h, &.{0}, 1, &out, out.len));
+    try std.testing.expectEqual(@as(u8, 0xc3), out[0]);
+    try std.testing.expectEqual(@as(i32, 1), pico_tf_detokenize(h, &.{1}, 1, &out, out.len));
+    try std.testing.expectEqual(@as(u8, 0xa9), out[0]);
+    const whole = "<|im_start|>\u{e9}";
+    try std.testing.expectEqual(@as(i32, whole.len), pico_tf_detokenize(h, &.{ 2, 0, 1 }, 3, &out, out.len));
+    try std.testing.expectEqualStrings(whole, std.mem.sliceTo(&out, 0));
 }
