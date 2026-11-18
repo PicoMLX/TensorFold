@@ -201,8 +201,9 @@ fn write(out: ?[*]u8, cap: i32, text: []const u8) void {
     buf[n] = 0;
 }
 
+/// 2: `pico_tf_tokenize` takes the text's byte length, so a text may hold NUL characters.
 export fn pico_tf_abi_version() i32 {
-    return 1;
+    return 2;
 }
 
 export fn pico_tf_can_serve(model_dir: ?[*:0]const u8) i32 {
@@ -259,9 +260,10 @@ export fn pico_tf_close(handle: ?*Handle) void {
     gpa.destroy(h);
 }
 
-export fn pico_tf_tokenize(handle: ?*Handle, text: ?[*:0]const u8, out: ?[*]i32, cap: i32) i32 {
+export fn pico_tf_tokenize(handle: ?*Handle, text: ?[*]const u8, len: i32, out: ?[*]i32, cap: i32) i32 {
     const h = handle orelse return -1;
-    const bytes = std.mem.span(text orelse return -1);
+    if (len < 0 or (text == null and len > 0)) return -1;
+    const bytes: []const u8 = if (text) |t| t[0..@intCast(len)] else &.{};
     if (!std.unicode.utf8ValidateSlice(bytes)) return -1;
     const ids = h.tok.encode(gpa, bytes) catch return -1;
     defer gpa.free(ids);
