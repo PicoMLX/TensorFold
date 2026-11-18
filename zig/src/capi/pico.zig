@@ -4,6 +4,7 @@ const api = @import("engine_api");
 const native = @import("native_engines");
 const tokenizer = @import("tokenizer");
 const hub = @import("hub");
+const KimiText = @import("kimi_text").KimiText;
 const Allocator = std.mem.Allocator;
 
 /// A host's stderr hears what an engine warns of, not its load and close lines.
@@ -22,7 +23,7 @@ const Handle = struct {
     arena: std.heap.ArenaAllocator, // what the open read and the engine was handed: the folder, its type, the end tokens
     opened: api.Opened = undefined,
     info: api.Info = .{},
-    tok: tokenizer.Tokenizer = undefined,
+    text: Text = undefined,
     eos: []const u32 = &.{},
     mutex: std.Io.Mutex = .init,
     idle: std.Io.Condition = .init,
@@ -41,17 +42,8 @@ const Handle = struct {
         };
         const config: std.json.Value = std.json.parseFromSliceLeaky(std.json.Value, a, text, .{}) catch .null;
         const model_type = try a.dupe(u8, hub.modelType(a, io, dir));
-        h.tok = tokenizer.loadTokenizer(io, gpa, dir) catch |e| {
-            problem.* = try std.fmt.allocPrint(a, "cannot read {s}/tokenizer.json ({s})", .{ dir, @errorName(e) });
-            return e;
-        };
-        errdefer h.tok.deinit();
-        h.tok.memo = try tokenizer.Memo.create(gpa, 64 << 20); // a chat's earlier turns come back in every prompt
-        h.eos = eosIds(a, io, dir, config, &h.tok) catch |e| {
-            if (e == error.OutOfMemory) return e;
-            problem.* = try std.fmt.allocPrint(a, "invalid checkpoint EOS ({s})", .{@errorName(e)});
-            return e;
-        };
+        try h.loadText(dir, model_type, config, problem);
+        errdefer h.text.deinit();
         h.opened = try native.open(a, gpa, io, .{ .dir = dir, .model_type = model_type }, problem) orelse return error.Refused;
         errdefer h.opened.close(h.opened.ctx);
         h.info = h.opened.engine.info();
@@ -59,6 +51,33 @@ const Handle = struct {
             problem.* = try std.fmt.allocPrint(a, "{s} checkpoints write no text", .{model_type});
             return error.Refused;
         }
+    }
+
+    /// The tokenizer and end tokens the server would read (hf_text.zig): Kimi's release tiktoken, else tokenizer.json.
+    fn loadText(h: *Handle, dir: []const u8, model_type: []const u8, config: std.json.Value, problem: *[]const u8) !void {
+        const io = threaded.io();
+        const a = h.arena.allocator();
+        if (std.mem.eql(u8, model_type, "kimi_k3") or std.mem.eql(u8, model_type, "kimi_k31")) {
+            const kimi = KimiText.load(gpa, io, dir) catch |e| {
+                problem.* = try std.fmt.allocPrint(a, "cannot load Kimi tiktoken/XTML assets ({s})", .{@errorName(e)});
+                return e;
+            };
+            h.text = .{ .kimi = kimi };
+            h.eos = kimi.eos;
+            return;
+        }
+        var tok = tokenizer.loadTokenizer(io, gpa, dir) catch |e| {
+            problem.* = try std.fmt.allocPrint(a, "cannot read {s}/tokenizer.json ({s})", .{ dir, @errorName(e) });
+            return e;
+        };
+        errdefer tok.deinit();
+        tok.memo = try tokenizer.Memo.create(gpa, 64 << 20); // a chat's earlier turns come back in every prompt
+        h.eos = eosIds(a, io, dir, config, &tok) catch |e| {
+            if (e == error.OutOfMemory) return e;
+            problem.* = try std.fmt.allocPrint(a, "invalid checkpoint EOS ({s})", .{@errorName(e)});
+            return e;
+        };
+        h.text = .{ .hf = tok };
     }
 
     fn lock(h: *Handle) void {
@@ -102,6 +121,36 @@ const Handle = struct {
         h.unlock();
         gpa.free(job.request.prompt);
         gpa.destroy(job);
+    }
+};
+
+/// A checkpoint's tokenizer: what the caller writes is encoded with written-out specials as their ids and nothing added
+/// at either end; ids decode to the bytes they stand for, specials as their text.
+const Text = union(enum) {
+    hf: tokenizer.Tokenizer,
+    kimi: *KimiText,
+
+    fn encode(t: *const Text, text: []const u8) ![]u32 {
+        return switch (t.*) {
+            .hf => |*tok| tok.encode(gpa, text),
+            .kimi => |kimi| kimi.tok.encodeAlloc(gpa, text, true),
+        };
+    }
+
+    /// Caller frees with `gpa`.
+    fn decode(t: *const Text, ids: []const u32) ![]u8 {
+        return switch (t.*) {
+            .hf => |*tok| tok.decode(gpa, ids, false),
+            // the raw bytes (its own allocator is `gpa`): decodeAlloc would replace a character split between replies
+            .kimi => |kimi| kimi.tok.decode(ids),
+        };
+    }
+
+    fn deinit(t: *Text) void {
+        switch (t.*) {
+            .hf => |*tok| tok.deinit(),
+            .kimi => |kimi| kimi.deinit(),
+        }
     }
 };
 
@@ -336,7 +385,7 @@ export fn pico_tf_close(handle: ?*Handle) void {
     h.unlock();
     h.opened.close(h.opened.ctx);
     h.jobs.deinit(gpa);
-    h.tok.deinit();
+    h.text.deinit();
     h.arena.deinit();
     gpa.destroy(h);
 }
@@ -348,7 +397,7 @@ export fn pico_tf_tokenize(handle: ?*Handle, text: ?[*]const u8, len: i32, out: 
     defer h.leave();
     const bytes: []const u8 = if (text) |t| t[0..@intCast(len)] else &.{};
     if (!std.unicode.utf8ValidateSlice(bytes)) return -1;
-    const ids = h.tok.encode(gpa, bytes) catch return -1;
+    const ids = h.text.encode(bytes) catch return -1;
     defer gpa.free(ids);
     const n = @min(ids.len, @as(usize, @intCast(@max(cap, 0))));
     if (out) |o| @memcpy(o[0..n], @as([]const i32, @ptrCast(ids[0..n])));
@@ -362,7 +411,7 @@ export fn pico_tf_detokenize(handle: ?*Handle, tokens: ?[*]const i32, n: i32, ou
     defer h.leave();
     const ids: []const i32 = if (tokens) |t| t[0..@intCast(n)] else &.{};
     for (ids) |id| if (id < 0) return -1;
-    const text = h.tok.decode(gpa, @ptrCast(ids), false) catch return -1;
+    const text = h.text.decode(@ptrCast(ids)) catch return -1;
     defer gpa.free(text);
     write(out, cap, text);
     return std.math.cast(i32, text.len) orelse -1;
@@ -445,4 +494,65 @@ export fn pico_tf_memory(handle: ?*Handle, out: ?*[3]i64) i32 {
     const counts = out orelse return 1;
     for (counts, [_]u64{ m.active, m.cache, m.peak }) |*slot, bytes| slot.* = std.math.cast(i64, bytes) orelse return 1;
     return 0;
+}
+
+/// A Kimi K3 folder in the release layout (tiktoken.model, tokenizer_config.json, config.json) and no weights:
+/// 256 byte ranks and 32 merges, so its 544 ids are a vocabulary the engine's geometry check admits.
+fn kimiFixture(io: std.Io, dir: std.Io.Dir) !void {
+    var model: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer model.deinit();
+    const merges = [_][]const u8{ "He", "ll", "llo", "Hello", " w", "or", "ld", " wor", " world" };
+    var rank: u32 = 0;
+    var buf: [16]u8 = undefined;
+    for (0..256) |b| {
+        try model.writer.print("{s} {d}\n", .{ std.base64.standard.Encoder.encode(&buf, &.{@as(u8, @intCast(b))}), rank });
+        rank += 1;
+    }
+    for (0..32) |i| {
+        const filler: [2]u8 = .{ 'q', @intCast('0' + i) }; // distinct from every merge and each other
+        const piece = if (i < merges.len) merges[i] else &filler;
+        try model.writer.print("{s} {d}\n", .{ std.base64.standard.Encoder.encode(&buf, piece), rank });
+        rank += 1;
+    }
+    try dir.writeFile(io, .{ .sub_path = "tiktoken.model", .data = model.written() });
+    try dir.writeFile(io, .{ .sub_path = "tokenizer_config.json", .data =
+        \\{"added_tokens_decoder": {"288": {"content": "<|open|>", "special": true}, "289": {"content": "<|close|>", "special": true},
+        \\ "290": {"content": "<|sep|>", "special": true}, "291": {"content": "<|end_of_msg|>", "special": true}}}
+    });
+    try dir.writeFile(io, .{ .sub_path = "config.json", .data =
+        \\{"model_type": "kimi_k3", "eos_token_id": 291, "text_config": {"vocab_size": 544, "eos_token_id": 291}}
+    });
+}
+
+test "pico lib: a Kimi checkpoint tokenizes and decodes with its release tiktoken, its end token from config.json" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try kimiFixture(std.testing.io, tmp.dir);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+    const h = try gpa.create(Handle);
+    h.* = .{ .arena = .init(gpa) };
+    defer {
+        h.text.deinit();
+        h.arena.deinit();
+        gpa.destroy(h);
+    }
+    var problem: []const u8 = "";
+    try h.loadText(dir, "kimi_k3", .null, &problem);
+    try std.testing.expect(h.text == .kimi);
+    try std.testing.expectEqualSlices(u32, &.{291}, h.eos);
+    // written-out specials are their ids, the merges apply, nothing is added at either end
+    const text = "<|open|>Hello world<|end_of_msg|>";
+    var ids: [16]i32 = undefined;
+    const n = pico_tf_tokenize(h, text.ptr, text.len, &ids, ids.len);
+    try std.testing.expectEqualSlices(i32, &.{ 288, 259, 264, 291 }, ids[0..@intCast(n)]);
+    var out: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(i32, text.len), pico_tf_detokenize(h, &ids, n, &out, out.len));
+    try std.testing.expectEqualStrings(text, std.mem.sliceTo(&out, 0));
+    // a character split between two ids decodes to its own bytes, not a replacement character
+    const e = "\u{e9}";
+    try std.testing.expectEqual(@as(i32, 2), pico_tf_tokenize(h, e.ptr, e.len, &ids, ids.len));
+    try std.testing.expectEqual(@as(i32, 1), pico_tf_detokenize(h, &ids, 1, &out, out.len));
+    try std.testing.expectEqual(@as(u8, 0xc3), out[0]);
 }
