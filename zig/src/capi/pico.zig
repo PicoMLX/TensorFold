@@ -14,7 +14,7 @@ const gpa = std.heap.c_allocator;
 var threaded: std.Io.Threaded = .init_single_threaded;
 
 /// status -1: `n` reply tokens, valid during the call; status 0 and up: the request's last call, with its usage.
-const Callback = *const fn (ctx: ?*anyopaque, tokens: ?[*]const i32, n: i32, status: i32, usage: ?*const [5]i64) callconv(.c) void;
+const Callback = *const fn (ctx: ?*anyopaque, tokens: ?[*]const i32, n: i32, status: i32, usage: ?*const [6]i64) callconv(.c) void;
 
 /// One loaded checkpoint; requests in flight are in `jobs` until their last callback has returned.
 const Handle = struct {
@@ -100,6 +100,7 @@ const Job = struct {
     cached: u32 = 0,
     sent: i64 = 0,
     ended: bool = false, // an end token came: nothing after it is the reply's
+    stop: i64 = -1, // that end token, for a caller whose chat format has more than one
     cancelled: bool = false, // asked to stop, perhaps before the engine knew its name (under the handle's lock)
 
     /// The engine's sink, on its thread.
@@ -117,6 +118,7 @@ const Job = struct {
                     if (std.mem.indexOfScalar(u32, job.request.eos, t) != null) break i;
                 } else tokens.len;
                 job.ended = n < tokens.len;
+                if (job.ended) job.stop = tokens[n];
                 if (n == 0) return;
                 job.sent += @intCast(n);
                 job.cb(job.ctx, @ptrCast(tokens.ptr), @intCast(n), -1, null);
@@ -127,7 +129,7 @@ const Job = struct {
                 const prompt: i64 = @intCast(job.request.prompt.len);
                 const cached: i64 = @min(job.cached, prompt);
                 const prefill: i64 = if (f.stats.prefill_seconds) |s| std.math.lossyCast(i64, s * 1e6) else micros(filled - job.submitted);
-                const usage = [5]i64{ prompt - cached, cached, job.sent, prefill, micros(end - filled) };
+                const usage = [6]i64{ prompt - cached, cached, job.sent, prefill, micros(end - filled), if (f.reason == .stop) job.stop else -1 };
                 if (f.reason == .failed) std.log.err("pico_tf: request {d} failed: {s}", .{ job.id, f.message });
                 job.cb(job.ctx, null, 0, switch (f.reason) {
                     .stop => 0,
@@ -202,8 +204,9 @@ fn write(out: ?[*]u8, cap: i32, text: []const u8) void {
 }
 
 /// 2: `pico_tf_tokenize` takes the text's byte length, so a text may hold NUL characters.
+/// 3: a request's usage has a sixth value, the end token that stopped the reply or -1.
 export fn pico_tf_abi_version() i32 {
-    return 2;
+    return 3;
 }
 
 export fn pico_tf_can_serve(model_dir: ?[*:0]const u8) i32 {
