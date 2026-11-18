@@ -94,6 +94,8 @@ test {
     _ = @import("speech.zig");
     _ = @import("images_generations.zig");
     if (comptime @import("builtin").os.tag != .windows) _ = @import("images_batch_test.zig"); // uses a socketpair test
+    if (comptime @import("builtin").os.tag != .windows) _ = @import("images_progress_test.zig"); // the same
+    if (comptime @import("builtin").os.tag != .windows) _ = @import("images_sequence_progress_test.zig"); // the same
     _ = @import("drama_cfg.zig");
     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_cfg_test.zig");
     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_stream_test.zig"); // over a Unix socket pair
@@ -182,6 +184,7 @@ test {
     _ = @import("systemone.zig");
     _ = @import("systemone_test.zig");
     _ = @import("rerank_test.zig");
+    _ = @import("score_routes_test.zig");
     _ = @import("rerank_ids_test.zig");
     _ = @import("rerank_cut_test.zig");
     _ = @import("rerank_decide_test.zig");
@@ -310,6 +313,7 @@ test {
 test {
     _ = @import("request_starts_turns_test.zig");
     _ = @import("thinking_request_test.zig");
+    _ = @import("grafana_dashboard_test.zig");
     _ = @import("ocr/types_test.zig");
     _ = @import("ocr/geometry_test.zig");
     _ = @import("ocr/markdown_test.zig");
