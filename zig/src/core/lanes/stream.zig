@@ -25,7 +25,6 @@ pub const Reason = enum {
 };
 
 pub const Mode = enum { pipe, drain, verify, exit };
-
 pub const loop_max_period: usize = 8;
 pub const loop_min_run: usize = 256;
 pub const loop_warm_in: usize = 64;
@@ -92,6 +91,7 @@ pub const Reuse = struct {
 pub const MarkHook = struct {
     ptr: *anyopaque,
     at: *const fn (ptr: *anyopaque, s: *Stream, at: u32) void,
+    interrupted: ?*const fn (ptr: *anyopaque, s: *Stream, at: u32) void = null,
 };
 
 /// Drafts the backend holds for the stream's next round; a tree keeps its tokens and parents on the host.
@@ -112,7 +112,6 @@ pub const Image = struct {
     content_size: ?[2]u32 = null,
     hash: u64 = 0, // core/picture/identity.zig's: the bytes and the grid, as the prompt cache's key names the image
 };
-
 pub const Spec = struct {
     id: []const u8,
     prompt: []const u32,
@@ -147,9 +146,9 @@ pub const Spec = struct {
     grammar: ?*grammar.Constraint = null, // structured output: the reply stays in it (the creator frees it)
     decode_spans: []const [2]u32 = &.{}, // prompt rows an earlier reply decoded (Request.decode_spans), for backends that keep their bits
     images: []const Image = &.{}, // in prompt order; the backend's tower fills their rows
-    key: []const u32 = &.{}, // the prompt as the cache matches it (image rows by their image); empty: the prompt
+    key: []const u32 = &.{},
+    cache_salt: ?u64 = null, // effective cache key and its exact optional salt
 };
-
 pub const Stream = struct {
     embedding: ?@import("embedding.zig").Batch = null,
     readout: ?*const @import("readout.zig").Spec = null, // the request's; the backend writes its logits
@@ -171,6 +170,7 @@ pub const Stream = struct {
     think_open: bool,
     answer_max: u32,
     answer_from: ?usize = null, // emitted() index after the first `think_end`: the answer starts there
+    think_seen: bool = false, // the think block's length is in srpt's estimate of how long reasoning runs
     loop_guard: bool,
     loop_stop: bool = false,
     loop_period: ?u32 = null,
@@ -193,6 +193,7 @@ pub const Stream = struct {
     untaught: bool = false,
     images: []const Image = &.{},
     key: []const u32 = &.{},
+    cache_salt: ?u64 = null,
     cached: u32 = 0, // prompt tokens the backend restored from `reuse` (its prompt pass started there)
     fill_at: std.atomic.Value(u32) = .init(0), // prompt tokens the pass has prefilled; the engine thread writes
     reuse_failed: bool = false, // the backend's restore of `reuse` failed: it prefilled from 0
@@ -249,7 +250,6 @@ pub const Stream = struct {
     draft_chances: std.ArrayList(f64) = .empty, // last full head prices, retained through zero-row rounds
     draft_chances_cut: ?usize = null, // first chance a cut left unknown (null: measured); a chances hook marks it
     copy_width: ?u32 = null,
-
     pub fn init(gpa: Allocator, spec: Spec) !Stream {
         var s: Stream = .{
             .id = spec.id,
@@ -287,6 +287,7 @@ pub const Stream = struct {
             .decode_spans = spec.decode_spans,
             .images = spec.images,
             .key = spec.key,
+            .cache_salt = spec.cache_salt,
         };
         // under a grammar a forced close ends at the think end: the grammar takes the reply from the next token
         if (spec.grammar) |g| if (g.after) |end| if (std.mem.indexOfScalar(u32, s.think_close, end)) |at| {
@@ -381,7 +382,7 @@ pub const Stream = struct {
     /// Keep a completed, resumable prompt prefix before cancellation releases the backend's state.
     pub fn keepInterruptedPrefill(s: *Stream, at: u32) void {
         if (at <= s.cached or at >= s.prompt_len) return;
-        if (s.reuse.hook) |hook| hook.at(hook.ptr, s, at);
+        if (s.reuse.hook) |hook| (hook.interrupted orelse hook.at)(hook.ptr, s, at);
     }
 
     /// Whether a background prompt pass should step aside now (false with no hook); asked before each chunk.

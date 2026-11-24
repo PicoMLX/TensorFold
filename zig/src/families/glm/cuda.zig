@@ -3,6 +3,7 @@
 pub const experts = @import("cuda_experts.zig");
 pub const exl3 = @import("cuda_exl3.zig");
 pub const vision = @import("cuda_vision.zig");
+pub const vision_attn = @import("cuda_vision_attn.zig");
 pub const mm = @import("cuda_mm.zig");
 pub const vision_config = @import("vision_config.zig");
 pub const image_core = @import("image_core.zig");
@@ -43,12 +44,17 @@ pub const lane_costs = @import("cuda_lane_costs.zig");
 pub const native = @import("cuda_native.zig");
 pub const snapshots = @import("cuda_snapshots.zig");
 pub const kv_host = @import("cuda_kv_host.zig");
+pub const pdl = @import("cuda_pdl.zig");
+pub const disk_image = @import("cuda_disk_image.zig");
+pub const disk_ranks = @import("cuda_disk_ranks.zig");
 
 test {
     _ = lane_costs;
     _ = @import("cuda_formats_csf0_test.zig");
     _ = @import("cuda_tile.zig");
     _ = @import("cuda_kv8_test.zig");
+    _ = @import("cuda_latent_test.zig");
+    _ = @import("cuda_forward_head_test.zig");
     _ = kv8_ref;
     _ = @import("cuda_prof.zig");
     _ = @import("cuda_load_owner.zig");
@@ -60,6 +66,7 @@ test {
     _ = @import("cuda_ranks_roce_test.zig");
     _ = @import("cuda_env.zig");
     _ = @import("cuda_taps_tp_test.zig");
+    _ = @import("cuda_pdl.zig");
     _ = @import("cuda_resolve_test.zig");
     _ = @import("cuda_boundary.zig");
     _ = @import("cuda_roce_multi.zig");
@@ -70,9 +77,12 @@ test {
     _ = prompt_solo;
     _ = @import("cuda_l2pf.zig");
     _ = prompt_pair;
+    _ = @import("cuda_disk_image.zig");
+    _ = @import("cuda_disk_ranks_test.zig");
     _ = experts;
     _ = exl3;
     _ = vision;
+    _ = vision_attn;
     _ = @import("vision_names.zig");
     _ = mm;
     _ = image_core;

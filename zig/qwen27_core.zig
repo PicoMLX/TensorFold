@@ -3,6 +3,8 @@ pub const checkpoint = @import("src/core/checkpoint.zig");
 pub const gguf = @import("src/core/gguf.zig");
 pub const checkpoint_metal = @import("src/core/checkpoint_metal.zig");
 pub const safetensors = @import("src/core/safetensors.zig");
+/// The shard file cache checkpoint_metal.zig reaches through `core`, as the engine's own core exports it.
+pub const checkpoint_file_cache = @import("src/core/checkpoint_file_cache.zig");
 pub const Checkpoint = checkpoint.Checkpoint;
 pub const npy = @import("src/core/npy.zig");
 pub const tokenizer = @import("tokenizer");
@@ -10,6 +12,9 @@ pub const tokenizer = @import("tokenizer");
 pub const qwen_vl = @import("src/core/qwen_vl/qwen_vl.zig");
 
 pub const segments = @import("src/core/segments.zig");
+pub const prompt_tail = @import("src/core/prompt_tail.zig");
+/// Staged references: the qwen3_5 forward's stages and their on-disk layout (tools/zig/qwen36_stage_ref.py).
+pub const qwen35_stages = @import("src/families/qwen3_5/stages.zig");
 
 pub const checkpoint_host = checkpoint;
 pub const lane_projection = @import("core_lane");
@@ -41,3 +46,4 @@ pub const bf16_topk_gpu = @import("bf16_topk_gpu");
 pub const tree_commit_gpu = @import("tree_commit_gpu");
 
 pub const tree_slots = @import("src/core/tree_slots.zig");
+pub const recurrent_workspace = @import("src/core/recurrent_workspace.zig");

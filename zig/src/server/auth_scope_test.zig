@@ -105,6 +105,23 @@ test "auth scopes: route grants are exact and every other method or resource is 
     try t.expect(!scope.allows(.{}, "GET", "/v1/models"));
 }
 
+test "auth scopes: one model's entry is granted with the listing, by GET only, and a /models suffix stays refused" {
+    const infer: scope.Scopes = .{ .inference = true };
+    const read: scope.Scopes = .{ .read = true };
+    const both: scope.Scopes = .{ .inference = true, .read = true };
+    for ([_][]const u8{ "/v1/models/m", "/models/m", "/v1/models/org/m", "/v1/models/org%2Fm", "/models/m/?x=1" }) |path| {
+        try t.expect(scope.allows(read, "GET", path) and scope.allows(infer, "GET", path));
+        for ([_][]const u8{ "POST", "DELETE", "PUT", "HEAD", "OPTIONS" }) |method| try t.expect(!scope.allows(both, method, path));
+        try t.expect(!scope.allows(.{}, "GET", path));
+    }
+    for ([_][]const u8{ "/v1/models/m/models", "/models/models", "/x/models/m", "/v2/models/m" }) |path|
+        try t.expect(!scope.allows(both, "GET", path));
+    try t.expectEqualStrings("org/m", scope.modelId("/v1/models/org/m").?);
+    try t.expectEqualStrings("org%2Fm", scope.modelId("/models/org%2Fm").?);
+    for ([_][]const u8{ "/v1/models", "/models", "/v1/models/", "/v1/models/m/models", "/v1/modelsx" }) |route|
+        try t.expect(scope.modelId(route) == null);
+}
+
 fn denial(scopes: scope.Scopes, text: []const u8) !?scope.Denial {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
@@ -122,6 +139,16 @@ test "auth scopes: restricted Responses requests must be stateless and full keys
         try t.expectEqual(@as(?scope.Denial, .response_history), try denial(.{ .inference = true, .read = true }, body));
     for ([_][]const u8{ "{\"input\":\"x\"}", "{\"previous_response_id\":\"resp_1\"}" }) |body|
         try t.expectEqual(@as(?scope.Denial, null), try denial(scope.full, body));
+}
+
+test "auth scopes: a reply's execution witness needs read beside inference; admin and full keys keep it" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const asked = (try json.parse(arena.allocator(), "{\"prompt\":\"x\",\"execution_witness\":true}")).ok;
+    try t.expectEqual(@as(?scope.Denial, .execution_witness), scope.witnessDenial(.{ .inference = true }, asked));
+    for ([_]scope.Scopes{ .{ .inference = true, .read = true }, scope.full }) |s| try t.expectEqual(@as(?scope.Denial, null), scope.witnessDenial(s, asked));
+    for ([_][]const u8{ "{\"prompt\":\"x\"}", "{\"execution_witness\":false}", "{\"execution_witness\":1}", "[1]" }) |body|
+        try t.expectEqual(@as(?scope.Denial, null), scope.witnessDenial(.{ .inference = true }, (try json.parse(arena.allocator(), body)).ok));
 }
 
 test "auth scopes: flags, environment and plain file lines keep every route; the first configured key wins" {

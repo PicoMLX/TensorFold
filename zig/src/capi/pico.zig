@@ -349,6 +349,10 @@ export fn pico_tf_abi_version() i32 {
     return 3;
 }
 
+export fn pico_tf_build_info_v1() ?[*:0]const u8 {
+    return if (comptime @import("pico_build_info").json) |json| std.fmt.comptimePrint("{s}", .{json}) else null;
+}
+
 export fn pico_tf_can_serve(model_dir: ?[*:0]const u8) i32 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();

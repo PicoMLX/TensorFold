@@ -2,6 +2,10 @@
 const std = @import("std");
 const modes = @import("engine_api").cache_modes;
 const pc = @import("engine_api").prompt_cache;
+/// A stream with no separate salt identity may use standing slot state.
+pub fn plain(salt: ?u64) bool {
+    return salt == null;
+}
 
 /// Where a prompt resumes in slot 0: where the slot stands (`here`), back at its rewind point (`back`), or not.
 pub const Resume = union(enum) { none, here: u32, back: u32 };
@@ -21,6 +25,12 @@ pub const Leaving = struct {
         return l.ended and l.at <= l.context_len and l.at + 1 >= l.context_len;
     }
 };
+
+/// Cancellation may retain landed prompt state, or rewind advanced recurrence to a completed history cut.
+pub fn cancelPoint(at: u32, filled: u32, rewind: u32) u32 {
+    if (at <= filled) return at;
+    return if (rewind > 0 and rewind <= filled) rewind else 0;
+}
 
 /// The tokens slot 0 stands after, their rows' canonical decoded spans, and a rewind point inside them.
 pub const Standing = struct {
@@ -405,6 +415,7 @@ test "qwen27 resume: a client dropping the reasoning, a cold turn or a pass that
 
 test {
     _ = @import("qwen27_resume_cache_test.zig");
+    _ = @import("qwen27_cancel_test.zig");
 }
 
 test "qwen27 resume: the history rewind is needed until two rounded full-context states fit" {
@@ -417,4 +428,9 @@ test "qwen27 resume: the history rewind is needed until two rounded full-context
     try t.expectEqual(@as(usize, 34078), rewindEnd(33792, 34083, 34078));
     try t.expectEqual(@as(usize, 34083), rewindEnd(33792, 34083, 0));
     try t.expectEqual(@as(usize, 34083), rewindEnd(33792, 34083, 33792));
+}
+
+test "qwen27 resume: a salted stream never uses standing slot state" {
+    try t.expect(plain(null));
+    try t.expect(!plain(1));
 }

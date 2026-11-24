@@ -1,0 +1,58 @@
+name: Pico native library
+
+on:
+  push:
+    branches: [engine-router]
+  pull_request:
+    branches: [engine-router]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pico-lib-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-library:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+          use-cache: false
+      - name: Metal toolchain
+        run: xcrun -sdk macosx metal -v || { xcodebuild -downloadComponent MetalToolchain && xcrun -sdk macosx metal -v; }
+      - name: Source metadata host tests
+        run: zig build test-pico-build-info-host -Dcpu=apple_m1
+      - name: Build library and run C API tokenizer tests
+        run: zig build pico-lib test-pico-lib -Dcpu=apple_m1
+      - name: Verify exported ABI and source metadata
+        run: |
+          python3 - <<'PY'
+          import ctypes
+          import json
+          import subprocess
+
+          def git(*args):
+              result = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+              return result.stdout.strip() if result.returncode == 0 else None
+
+          library = ctypes.CDLL("zig-out/native/lib/libPicoTensorFold.dylib")
+          library.pico_tf_abi_version.restype = ctypes.c_int32
+          assert library.pico_tf_abi_version() == 3
+          library.pico_tf_build_info_v1.restype = ctypes.c_char_p
+          info = json.loads(library.pico_tf_build_info_v1())
+          assert info == {
+              "revision": git("rev-parse", "--verify", "HEAD"),
+              "tag": git("describe", "--tags", "--exact-match", "HEAD"),
+              "dirty": bool(git("status", "--porcelain", "--untracked-files=all")),
+          }, info
+          print(json.dumps(info, sort_keys=True))
+          PY
