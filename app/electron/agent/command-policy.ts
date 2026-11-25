@@ -260,7 +260,8 @@ function shellPolicyTokens(input: string): ShellToken[] {
 
 const SHELL_COMMAND_KEYWORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'while', 'until', 'do', 'done', '!', '{', '}'])
 const UNCLASSIFIED_SHELL_KEYWORDS = new Set(['case', 'function'])
-const COMMAND_WRAPPERS: Record<string, true> = { bash: true, command: true, env: true, exec: true, nice: true, nohup: true, setsid: true, sh: true, stdbuf: true, time: true, timeout: true, xargs: true, zsh: true }
+const OPAQUE_SHELL_EXECUTABLES = new Set(['eval', 'source', '.'])
+const COMMAND_WRAPPERS: Record<string, true> = { bash: true, builtin: true, command: true, env: true, exec: true, nice: true, nohup: true, setsid: true, sh: true, stdbuf: true, time: true, timeout: true, xargs: true, zsh: true }
 const WRAPPER_OPTION_OPERANDS: Record<string, number> = {
   'env:-C': 1, 'env:-S': 1, 'env:-u': 1, 'env:--chdir': 1, 'env:--split-string': 1, 'env:--unset': 1,
   'exec:-a': 1,
@@ -275,7 +276,7 @@ const WRAPPER_OPTION_OPERANDS: Record<string, number> = {
 }
 const RECURSIVE_WRAPPER_OPTIONS = new Set(['env:-S', 'env:--split-string', 'sh:-c', 'bash:-c', 'zsh:-c'])
 const LOCAL_ONLY_EXECUTABLES = new Set([
-  'awk', 'basename', 'cat', 'cd', 'chmod', 'command', 'cp', 'cut', 'date', 'dirname', 'echo', 'env', 'exec',
+  'awk', 'basename', 'builtin', 'cat', 'cd', 'chmod', 'command', 'cp', 'cut', 'date', 'dirname', 'echo', 'env', 'exec',
   'false', 'head', 'less', 'ln', 'ls', 'mkdir', 'more', 'mv', 'nice', 'nl', 'nohup', 'pwd', 'printf',
   'readlink', 'realpath', 'rm', 'rmdir', 'sed', 'setsid', 'sleep', 'sort', 'stdbuf', 'tail', 'tee',
   'time', 'timeout', 'touch', 'tr', 'true', 'uniq', 'wc', 'which', 'xargs',
@@ -287,7 +288,7 @@ const initialCommandState = (): CommandState => ({ start: true, wrapper: null, o
 
 function normalizedCommandTokens(input: string, invocations?: CommandInvocation[]): string {
   let state = initialCommandState()
-  const states: CommandState[] = []
+  const states: Array<{ state: CommandState, active: CommandInvocation[] }> = []
   const out: string[] = []
   const ownedInvocations: CommandInvocation[] = []
   const operandWords = new Set<number>()
@@ -305,7 +306,6 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
   }
   for (const token of shellPolicyTokens(input)) {
     if (token.kind === 'push') {
-      finishCommand()
       if (token.unclassified) recordInvocation('function', true)
       // A substitution can itself supply a redirect, option or positional wrapper operand.
       if (token.wordId !== undefined && !operandWords.has(token.wordId)) {
@@ -314,14 +314,17 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
         else if (state.wrapperOperands > 0) { operandWords.add(token.wordId); state.wrapperOperands-- }
       }
       state.redirectOperand = false
-      states.push({ ...state })
+      states.push({ state: { ...state }, active })
       state = initialCommandState()
+      active = []
       out.push(token.text)
       continue
     }
     if (token.kind === 'pop') {
       finishCommand()
-      state = states.pop() ?? initialCommandState()
+      const outer = states.pop()
+      state = outer?.state ?? initialCommandState()
+      active = outer?.active ?? []
       out.push(token.text)
       continue
     }
@@ -494,6 +497,7 @@ export function commandApprovalReason(command: string): string | null {
     if (networkReason === 'shell network redirection') return 'shell network redirection requires explicit approval'
     if (networkReason === 'inline interpreter network access') return 'inline interpreter network access requires explicit approval'
     if (networkReason === 'unclassified shell control syntax') return 'unclassified shell control syntax requires explicit approval'
+    if (networkReason === 'opaque shell execution') return 'opaque shell execution requires explicit approval'
   }
   for (const candidate of [classified]) {
     for (const { re, reason } of APPROVAL_COMMAND_PATTERNS) {
@@ -524,6 +528,7 @@ export function commandNetworkReason(command: string, failClosedUnsandboxed = fa
   normalizedCommandTokens(normalized, invocations)
   for (const invocation of invocations) {
     if (invocation.unclassified) return 'unclassified shell control syntax'
+    if (OPAQUE_SHELL_EXECUTABLES.has(invocation.name)) return 'opaque shell execution'
     const direct = directReasons.get(invocation.name)
     if (direct) return direct
     const text = invocation.text ?? invocation.name

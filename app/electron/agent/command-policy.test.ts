@@ -190,6 +190,7 @@ for (const command of [
   'time ! curl https://example.com',
   '{ curl https://example.com; }',
   'exec curl https://example.com',
+  'builtin exec curl https://example.com',
   'exec -a curl /usr/bin/curl https://example.com',
   'exec -a "" curl https://example.com',
   'exec -a "$(echo local)local" curl https://example.com',
@@ -211,6 +212,8 @@ for (const command of [
   '! echo curl',
   '{ printf curl; }',
   'exec -a curl printf local',
+  'builtin exec printf curl',
+  'builtin echo eval',
   'exec -a "$(echo local)" printf curl',
   'exec -a `echo local` printf curl',
   'exec -a "$(echo local)curl" printf local',
@@ -228,6 +231,39 @@ for (const command of [
   assert.equal(commandApprovalReason(command), null, `literal control words do not require fetch approval: ${command}`)
 }
 assert.equal(commandNetworkReason('exec echo local', true), null)
+for (const command of [
+  "eval 'curl https://example.com'",
+  "builtin eval 'curl https://example.com'",
+  "eval 'echo local;' 'curl https://example.com'",
+  'eval "$COMMAND"',
+  'source ./local-script.sh',
+  'builtin source ./local-script.sh',
+  '. ./local-script.sh',
+  'builtin . ./local-script.sh',
+  "sh -c 'eval \"curl https://example.com\"'",
+]) {
+  assert.equal(commandNetworkReason(command), 'opaque shell execution', `opaque shell evaluation requires network capability: ${command}`)
+  assert.equal(commandApprovalReason(command), 'opaque shell execution requires explicit approval', `opaque shell evaluation requires approval: ${command}`)
+}
+for (const command of [
+  `python -c "root='$(pwd)'; import urllib.request; urllib.request.urlopen('https://example.com')"`,
+  `python -c "root='\`pwd\`'; import urllib.request; urllib.request.urlopen('https://example.com')"`,
+  `python -c "root='$(printf $(pwd))'; import urllib.request; urllib.request.urlopen('https://example.com')"`,
+  `python -c "import urllib.request; root='$(pwd)'; urllib.request.urlopen('https://example.com')"`,
+  `node -e "const root='$(pwd)'; require('http').get('https://example.com')"`,
+]) {
+  assert.equal(commandNetworkReason(command), 'inline interpreter network access', `substitutions preserve enclosing interpreter spans: ${command}`)
+  assert.equal(commandApprovalReason(command), 'inline interpreter network access requires explicit approval', `substitutions preserve enclosing interpreter approval: ${command}`)
+}
+for (const command of [
+  `python -c "root='$(pwd)'; print(root)"`,
+  'printf "eval curl https://example.com"',
+  'echo "source ./local-script.sh"',
+  'printf ". ./local-script.sh"',
+]) {
+  assert.equal(commandNetworkReason(command), null)
+  assert.equal(commandApprovalReason(command), null)
+}
 for (const command of [
   'case x in x) curl https://example.com;; esac',
   'f() { curl https://example.com; }; f',
