@@ -33,6 +33,10 @@ client polls the census (two reads within ``WATCHED`` seconds, the last that rec
 and a pair stays open until a census counts two open at once (at most ``COUNTED`` seconds), so however slow a census
 read is, one taken meanwhile sees them.
 
+``running(..., census_batches=event)`` instead holds requests for a census when the test sets ``event`` around an
+explicitly concurrent batch. A census that actually counts two open requests consumes the event, so later arrivals
+need not wait again. This does not infer a poller from its first reads. Serial faults retain their serial path.
+
 The cached server reports five cached tokens for a later chat turn (more than one message), and for a one-message
 prompt it answered before. It keeps the prompts it
 answered in an LRU of ``CAPACITY`` entries; a prompt pushed out reports 0 until it is asked again. ``GET /v1/load``,
@@ -188,6 +192,8 @@ class FakeEngine(http.server.BaseHTTPRequestHandler):
                 server.census_gap, server.census_at = time.monotonic() - server.census_at, time.monotonic()
                 if busy > 1:
                     server.overlaps += 1
+                    if server.census_batches is not None:
+                        server.census_batches.clear()
                     server.cond.notify_all()
             capacity = {"mode": "window", "lanes_free": LANES - busy - server.lost} if server.lanes_free else {}
             return self.reply(200, {"lanes": LANES, "running": busy + warming, "waiting": 19 * warming,
@@ -234,11 +240,15 @@ class FakeEngine(http.server.BaseHTTPRequestHandler):
             after_cut = key in server.cut
             server.cut.discard(key)
         try:
-            watched = time.monotonic() - server.census_at < WATCHED and server.census_gap < WATCHED  # a poller
-            window = WATCHED_WINDOW if watched else PARTNER_WINDOW
-            batched = self.batched(BATCH_WINDOW if server.fault == "concurrent" else window)
-            if batched:
-                self.counted() if watched else time.sleep(HOLD)
+            armed = server.census_batches is not None and server.census_batches.is_set() and server.fault != "serial"
+            if armed:
+                batched = self.counted()
+            else:
+                watched = time.monotonic() - server.census_at < WATCHED and server.census_gap < WATCHED
+                window = WATCHED_WINDOW if watched else PARTNER_WINDOW
+                batched = self.batched(BATCH_WINDOW if server.fault == "concurrent" else window)
+                if batched:
+                    self.counted() if watched else time.sleep(HOLD)
             sampled = bool(body.get("temperature")) and server.fault != "unsampled"
             cached, stale = self.lookup(messages)
             salt = "stale" if stale else "after a cut" if after_cut and server.fault == "cancel_reply" else None
@@ -320,7 +330,7 @@ class FakeEngine(http.server.BaseHTTPRequestHandler):
         server = self.server
         with server.cond:
             mark = server.overlaps
-            server.cond.wait_for(lambda: server.overlaps > mark, timeout=COUNTED)
+            return server.cond.wait_for(lambda: server.overlaps > mark, timeout=COUNTED)
 
     def salt(self, body, arrival, batched):
         """A planted fault changes the reply by adding a salt to its hash; None leaves it correct."""
@@ -369,13 +379,15 @@ class FakeEngine(http.server.BaseHTTPRequestHandler):
 
 
 @contextlib.contextmanager
-def running(cache=False, fault=None, linger=0.0, steps=None, warm=0.0, lanes_free=True, prefill=0.0, *, pair_streams=False):
+def running(cache=False, fault=None, linger=0.0, steps=None, warm=0.0, lanes_free=True, prefill=0.0, *,
+            pair_streams=False, census_batches=None):
     """One fake on 127.0.0.1 port 0, yielding its base URL; stopped on exit."""
     server = FixtureHTTPServer(("127.0.0.1", 0), FakeEngine)
     server.cache, server.fault, server.seen, server.inflight, server.linger = cache, fault, {}, 0, linger
     server.steps, server.kept, server.evicted, server.cut = steps, collections.OrderedDict(), set(), set()
     server.streams = server.leaked = server.lost = server.disconnects = server.overlaps = 0
     server.stream_pairs = StreamPairs(COUNTED) if pair_streams else None
+    server.census_batches = census_batches
     server.warm, server.warm_until, server.lanes_free, server.prefill = warm, 0.0, lanes_free, prefill
     server.census_at, server.census_gap = -1e9, 1e9  # no census read yet
     server.lock, server.one = threading.Lock(), threading.Lock()

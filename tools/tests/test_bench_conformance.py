@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import conformance
@@ -13,6 +15,7 @@ from conformance import drafted_gate, equality_gate, refusals_gate, reply_row, r
 from conformance_lifecycle import cancel_gate, census, evict_gate
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_served_api import FAULTS, doc, fake, script, serve
+import fake_served_api
 
 PROFILE = Path(__file__).resolve().parents[1] / "conformance_profiles" / "qwen35-cuda.json"
 
@@ -171,8 +174,19 @@ class GateRunTests(unittest.TestCase):
             profile[block]["settle_s"] = 1  # a held lane fails in a second, not a minute
         profile.update(changes)
         out = io.StringIO()
-        with tempfile.TemporaryDirectory() as tmp, fake(True, fault, **(shape or {})) as url, fake(False) as fresh, \
-                contextlib.redirect_stdout(out):
+        batches, together = threading.Event(), conformance.together
+
+        def counted_batch(client, bodies, delays=None):
+            if len(bodies) > 1:
+                batches.set()
+            try:
+                return together(client, bodies, delays)
+            finally:
+                batches.clear()
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                fake(True, fault, census_batches=batches, **(shape or {})) as url, fake(False) as fresh, \
+                contextlib.redirect_stdout(out), mock.patch.object(conformance, "together", counted_batch):
             path = Path(tmp) / "profile.json"
             path.write_text(json.dumps(profile))
             code = conformance.main([str(path), "--url", url, "--fresh-url", fresh, *extra])
@@ -192,6 +206,42 @@ class GateRunTests(unittest.TestCase):
         self.assertEqual(code, 0, lines)
         self.assertEqual(len(lines), len(conformance.GATES))
         self.assertTrue(all(line.startswith("PASS") for line in lines), lines)
+
+    def test_a_batch_waits_for_its_late_partner_and_first_census(self):
+        batches, first_started, first_finished, second_started = (threading.Event() for _ in range(4))
+        answer = fake_served_api.FakeEngine.answer
+
+        def delayed_answer(handler, body, key):
+            second = body["messages"][0]["content"] == "second"
+            if second:
+                first_started.wait(fake_served_api.COUNTED)
+                first_finished.wait(2 * fake_served_api.WATCHED_WINDOW)
+                second_started.set()
+            else:
+                first_started.set()
+            try:
+                return answer(handler, body, key)
+            finally:
+                if not second:
+                    first_finished.set()
+
+        with fake(True, census_batches=batches) as url, \
+                mock.patch.object(fake_served_api.FakeEngine, "answer", delayed_answer):
+            client = conformance.Client(url, "fake", timeout=10)
+            get = client.get
+
+            def delayed_census(path):
+                second_started.wait(fake_served_api.COUNTED)
+                return get(path)
+
+            client.get = delayed_census
+            bodies = [{"messages": [{"role": "user", "content": text}], "max_tokens": 4}
+                      for text in ("first", "second")]
+            batches.set()
+            rows, peak = conformance.watched(client, lambda: conformance.together(client, bodies))
+            batches.clear()
+        self.assertTrue(all(row.get("status") == 200 and row.get("tokens") == 4 for row in rows), rows)
+        self.assertGreaterEqual(peak[0] or 0, 2)
 
     def test_fault_drafted_differs_from_plain(self):
         self.assert_only_red("drafted")
