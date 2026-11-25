@@ -307,9 +307,10 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
     for (const invocation of active) invocation.end = out.length
     active = []
   }
-  for (const token of shellPolicyTokens(input)) {
+  const tokens = shellPolicyTokens(input)
+  for (const token of tokens) {
     if (token.kind === 'push') {
-      if (token.unclassified) recordInvocation('function', true)
+      if (token.unclassified || state.recurse && !state.redirectOperand && token.wordId !== undefined && !operandWords.has(token.wordId)) recordInvocation(state.recurse ? state.wrapper ?? 'shell' : 'function', true)
       // A substitution can itself supply a redirect, option or positional wrapper operand.
       if (token.wordId !== undefined && !operandWords.has(token.wordId)) {
         if (state.redirectOperand) operandWords.add(token.wordId)
@@ -347,6 +348,7 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
     }
     if (!state.start) { out.push(token.text); continue }
     if (state.recurse) {
+      if (token.wordId !== undefined && tokens.some(part => part.kind === 'push' && part.wordId === token.wordId)) recordInvocation(state.wrapper ?? 'shell', true)
       out.push(normalizedCommandTokens(token.text, invocations))
       state = initialCommandState()
       state.start = false

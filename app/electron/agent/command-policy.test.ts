@@ -231,6 +231,28 @@ for (const command of [
   assert.equal(commandApprovalReason(command), null, `literal control words do not require fetch approval: ${command}`)
 }
 assert.equal(commandNetworkReason('exec echo local', true), null)
+for (const command of [
+  'bash -c "echo $(pwd); curl https://example.com"',
+  'bash -lc "echo $(pwd); curl https://example.com"',
+  'sh -ic "echo $(pwd); curl https://example.com"',
+  'zsh -ilc "echo $(pwd); curl https://example.com"',
+  'env FLAG=yes bash -c "$(printf echo); curl https://example.com"',
+  'bash -c "echo `pwd`; curl https://example.com"',
+  'bash -c "echo $(printf $(pwd)); curl https://example.com"',
+]) {
+  assert.equal(commandNetworkReason(command), 'unclassified shell control syntax', `dynamic shell command words fail closed: ${command}`)
+  assert.equal(commandApprovalReason(command), 'unclassified shell control syntax requires explicit approval', `dynamic shell command words require approval: ${command}`)
+}
+for (const command of [
+  `bash -c 'echo $(pwd)'`,
+  `bash -c 'printf "%s" "$(pwd); curl https://example.com"'`,
+  `printf 'bash -c "echo $(pwd); curl https://example.com"'`,
+  `bash -c >$(printf out) 'echo local'`,
+  `bash -c >pre$(printf out) 'echo local'`,
+]) {
+  assert.equal(commandNetworkReason(command), null, `argument substitutions remain local: ${command}`)
+  assert.equal(commandApprovalReason(command), null, `literal arguments do not require approval: ${command}`)
+}
 for (const shell of ['bash', 'sh', 'zsh']) {
   for (const flags of ['-lc', '-ic', '-ilc']) {
     for (const command of [
