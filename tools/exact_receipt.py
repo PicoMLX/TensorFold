@@ -235,15 +235,20 @@ def run_matrix(base, prompts, args, fresh_base=None):
 
 def add_cross_cell_comparisons(out):
     results = out["results"]
+    def cell(value, **overrides):
+        fields = {**value, **overrides}
+        phase = {"cold": "first", "warm": "repeat"}.get(fields["phase"], fields["phase"])
+        return tuple(fields[k] for k in ("prompt", "sampling", "stop", "streams", "draft")) + (phase, fields["peer"])
+    cells = {cell(value): key for key, value in results.items()}
     for key, value in list(results.items()):
         if value["draft"]:
-            plain = key.replace("/draft/", "/plain/")
-            if plain in results:
+            plain = cells.get(cell(value, draft=False))
+            if plain is not None:
                 out["comparisons"].append(comparison("drafted_vs_plain", value["prompt"], plain, results[plain],
                                                      key, value))
         if value["streams"] > 1:
-            solo = key.replace(f"/s{value['streams']}/", "/s1/").replace(f"/peer{value['peer']}", "/peer0")
-            if solo in results:
+            solo = cells.get(cell(value, streams=1, peer=0))
+            if solo is not None:
                 out["comparisons"].append(comparison("solo_vs_concurrent", value["prompt"], solo, results[solo],
                                                      key, value))
 

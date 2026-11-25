@@ -69,7 +69,7 @@ fn download(a: Allocator, io: std.Io, client: *std.http.Client, auth: Auth, out:
         if (fileStat(io, partial_path)) |size| resume_from = size else |_| {}
     }
     if (resume_from >= e.size) resume_from = 0;
-    if (resume_from > 0 and (auth.fileContains(a, io, partial_path) catch true)) return error.HubCredentialBody;
+    if (resume_from > 0 and (auth.fileContainsWithProgress(a, io, partial_path, out) catch true)) return error.HubCredentialBody;
 
     var headers: [1]std.http.Header = undefined;
     var range_buf: [32]u8 = undefined;
@@ -105,6 +105,8 @@ fn download(a: Allocator, io: std.Io, client: *std.http.Client, auth: Auth, out:
         // The prefix on disk feeds the same digest in chunks: the check spans the whole file, nothing allocated whole.
         var prefix_buf: [64 << 10]u8 = undefined;
         var at: u64 = 0;
+        var progress = @import("pull_progress.zig").Verification.begin(out, resume_from);
+        defer progress.finish();
         while (at < resume_from) {
             const want: usize = @intCast(@min(prefix_buf.len, resume_from - at));
             const read = file.readPositionalAll(io, prefix_buf[0..want], at) catch 0;
@@ -113,6 +115,7 @@ fn download(a: Allocator, io: std.Io, client: *std.http.Client, auth: Auth, out:
             const safe = try body.feed(a, prefix_buf[0..read]);
             body.commit(safe.len);
             at += read;
+            progress.advance(at);
         }
     }
     var reader_buf: [64 << 10]u8 = undefined;
@@ -175,6 +178,10 @@ fn writeGuarded(a: Allocator, io: std.Io, file: std.Io.File, body: *Auth.Body, b
 
 /// Whether an existing cached blob still has the digest and byte count the hub advertised.
 pub fn cachedMatches(io: std.Io, path: []const u8, e: Entry) !bool {
+    return cachedMatchesWithProgress(io, path, e, null);
+}
+
+pub fn cachedMatchesWithProgress(io: std.Io, path: []const u8, e: Entry, out: ?*std.Io.Writer) !bool {
     if (try fileStat(io, path) != e.size) return false;
     const file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
@@ -184,12 +191,15 @@ pub fn cachedMatches(io: std.Io, path: []const u8, e: Entry) !bool {
     if (e.git_sha1 != null) git.update(try std.fmt.bufPrint(&git_head, "blob {d}\x00", .{e.size}));
     var buf: [64 << 10]u8 = undefined;
     var at: u64 = 0;
+    var progress = @import("pull_progress.zig").Verification.begin(out, e.size);
+    defer progress.finish();
     while (at < e.size) {
         const n = try file.readPositionalAll(io, buf[0..@intCast(@min(buf.len, e.size - at))], at);
         if (n == 0) return false;
         hash.update(buf[0..n]);
         if (e.git_sha1 != null) git.update(buf[0..n]);
         at += n;
+        progress.advance(at);
     }
     if (e.sha256) |want| {
         var got: [32]u8 = undefined;

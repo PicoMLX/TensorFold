@@ -93,9 +93,10 @@ class Server:
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 tail = (self.process.stderr.read() or "")[-2000:]
+                self.stop()
                 raise ServerFailed(f"server exited {self.process.returncode}: {tail}")
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{self.port}/v1/models", timeout=1).close()
+                urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=1).close()
                 return self
             except (urllib.error.URLError, OSError):
                 time.sleep(0.25)

@@ -90,6 +90,30 @@ class ExactRestartTests(unittest.TestCase):
             bad.__enter__()
         bad.stop()
 
+    def test_readiness_uses_public_health_when_models_require_authentication(self):
+        class Authenticated(BaseHTTPRequestHandler):
+            paths = []
+
+            def do_GET(self):
+                self.paths.append(self.path)
+                self.send_response(200 if self.path == "/health" else 401)
+                self.end_headers()
+
+            def log_message(self, *_):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Authenticated)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch.object(er, "READY_S", 1):
+                with er.Server([sys.executable, "-c", "import time; time.sleep(30)"], server.server_port):
+                    self.assertEqual(Authenticated.paths, ["/health"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_request_ids_reads_the_tensorfold_block(self):
         Stub.ids = BASE_IDS[:4]
         self.assertEqual(er.request_ids(self.base, PROMPT, 4), BASE_IDS[:4])

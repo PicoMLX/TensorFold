@@ -353,8 +353,8 @@ test "pull downloads, verifies, retries a cut body, resumes and refuses a family
     try std.testing.expect(std.mem.indexOf(u8, out2.written(), "weights.safetensors: cached") != null);
     try std.testing.expect(std.mem.indexOf(u8, out2.written(), "tensors/model-00001-of-00001.safetensors: cached") != null);
     try std.testing.expect(std.mem.indexOf(u8, out2.written(), "flaky.json: cached") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out2.written(), "\"phase\":\"verify\",\"completed\":5000,\"total\":5000") != null);
     try std.testing.expectEqual(@as(u32, 2), fake_hub.flaky_requests.load(.monotonic));
-
     // A partial blob resumes from its own length.
     const blob_path = try std.fs.path.join(a, &.{ root, "models--Org--Flash/blobs", fake_hub.weights_sha_hex });
     std.Io.Dir.cwd().deleteFile(io, blob_path) catch {};
@@ -362,10 +362,10 @@ test "pull downloads, verifies, retries a cut body, resumes and refuses a family
     var out3: std.Io.Writer.Allocating = .init(a);
     try std.testing.expectEqual(@as(u8, 0), try pull.run(a, io, &out3.writer, &err_out.writer, &env, root, "Org/Flash"));
     try std.testing.expectEqual(@as(u64, 2000), fake_hub.range_starts.load(.monotonic));
+    try std.testing.expect(std.mem.indexOf(u8, out3.written(), "\"phase\":\"verify\",\"completed\":2000,\"total\":2000") != null);
     try std.testing.expectEqual(@as(u32, 2), fake_hub.weight_requests.load(.monotonic));
     const resumed = try std.Io.Dir.cwd().readFileAlloc(io, weights_link, a, .limited(1 << 20));
     try std.testing.expectEqualSlices(u8, FakeHub.weights_body, resumed);
-
     // A family Zig cannot serve is refused with the 0.6 line, after the config check only.
     var refused_out: std.Io.Writer.Allocating = .init(a);
     var refused_err: std.Io.Writer.Allocating = .init(a);
@@ -405,11 +405,11 @@ test "large files come down as shared pieces, and whole files when the hub ignor
     try std.testing.expectEqual(@as(u8, 0), try pull.runWith(a, io, &out.writer, &err_out.writer, &env, root, "Org/Flash", small));
     try std.testing.expectEqual(@as(u32, 4), fake_hub.weight_requests.load(.monotonic));
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "weights.safetensors: 0.00 MiB in 4 pieces") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"phase\":\"verify\",\"completed\":5000,\"total\":5000") != null);
     const flash = try std.fs.path.join(a, &.{ root, "models--Org--Flash" });
     try std.testing.expectEqualSlices(u8, FakeHub.weights_body, try std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(a, &.{ flash, "snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1/weights.safetensors" }), a, .limited(1 << 20)));
     const blob = try std.fs.path.join(a, &.{ flash, "blobs", fake_hub.weights_sha_hex });
     try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, try std.fmt.allocPrint(a, "{s}.ranges.part0", .{blob}), .{}));
-
     // A repo whose weights ignore ranges: the pieces give way to one stream, and no piece file is left behind.
     var out2: std.Io.Writer.Allocating = .init(a);
     try std.testing.expectEqual(@as(u8, 0), try pull.runWith(a, io, &out2.writer, &err_out.writer, &env, root, "Org/Whole", small));

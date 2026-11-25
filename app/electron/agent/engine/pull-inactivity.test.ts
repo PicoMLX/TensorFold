@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { PullInactivity } from './pull-inactivity'
+import { parsePullActivity, PullInactivity } from './pull-inactivity'
 import { PullClock } from './test-fixtures/pull-clock'
 
 let expired = 0
@@ -24,4 +24,12 @@ guard.stop()
 clock.advance(60_000)
 assert.equal(expired, 2, 'terminal cleanup cancels the deadline')
 assert.equal(clock.pending, 0)
+assert.deepEqual(parsePullActivity('[tensorfold-pull] {"phase":"verify","completed":4096,"total":8192}'),
+  { phase: 'verify', completed: 4096, total: 8192 })
+for (const line of ['checking files', '[tensorfold-pull] {',
+  '[tensorfold-pull] {"phase":"verify","completed":-1,"total":8192}',
+  '[tensorfold-pull] {"phase":"verify","completed":8193,"total":8192}',
+  '[tensorfold-pull] {"phase":"verify","completed":1.5,"total":8192}']) {
+  assert.equal(parsePullActivity(line), null)
+}
 console.log('4/4 pull inactivity checks passed: exact boundary, resumed baseline, growth reset and cleanup')

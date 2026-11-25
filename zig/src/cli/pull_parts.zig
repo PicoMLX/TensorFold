@@ -195,21 +195,28 @@ fn startOf(head: std.http.Client.Response.Head) ?u64 {
 
 /// The sha256 of `path`'s first `size` bytes.
 pub fn digest(a: Allocator, io: std.Io, path: []const u8, size: u64) ![32]u8 {
+    return digestWithProgress(a, io, path, size, null);
+}
+
+pub fn digestWithProgress(a: Allocator, io: std.Io, path: []const u8, size: u64, out: ?*std.Io.Writer) ![32]u8 {
     const file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
     const buf = try a.alloc(u8, 4 << 20);
     defer a.free(buf);
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
     var at: u64 = 0;
+    var progress = @import("pull_progress.zig").Verification.begin(out, size);
+    defer progress.finish();
     while (at < size) {
         const n = try file.readPositionalAll(io, buf[0..@intCast(@min(buf.len, size - at))], at);
         if (n == 0) return error.ShortFile;
         hash.update(buf[0..n]);
         at += n;
+        progress.advance(at);
     }
-    var out: [32]u8 = undefined;
-    hash.final(&out);
-    return out;
+    var checksum: [32]u8 = undefined;
+    hash.final(&checksum);
+    return checksum;
 }
 
 test "pieces cover every byte once" {

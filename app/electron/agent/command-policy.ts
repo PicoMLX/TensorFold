@@ -222,8 +222,13 @@ function shellPolicyTokens(input: string): ShellToken[] {
       continue
     }
     if (ch === '>' || ch === '<') {
-      flush()
-      tokens.push({ kind: 'redirect', text: ch })
+      // An adjacent IO number or Bash {name} descriptor belongs to the redirect, not the executable.
+      const descriptor = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(word) ? word : ''
+      if (descriptor) word = ''
+      else flush()
+      const operator = source.slice(i).match(/^(?:<<<|<<-?|>>|<>|[<>]&|>\||[<>])/)![0]
+      tokens.push({ kind: 'redirect', text: descriptor + operator })
+      i += operator.length - 1
       continue
     }
     if (/\s/.test(ch)) { flush(); continue }
@@ -253,9 +258,9 @@ const LOCAL_ONLY_EXECUTABLES = new Set([
   'time', 'timeout', 'touch', 'tr', 'true', 'uniq', 'wc', 'which', 'xargs',
 ])
 
-type CommandState = { start: boolean, wrapper: string | null, optionOperands: number, wrapperOperands: number, recurse: boolean }
+type CommandState = { start: boolean, wrapper: string | null, optionOperands: number, wrapperOperands: number, recurse: boolean, redirectOperand: boolean }
 type CommandInvocation = { name: string, start: number, end: number, text?: string }
-const initialCommandState = (): CommandState => ({ start: true, wrapper: null, optionOperands: 0, wrapperOperands: 0, recurse: false })
+const initialCommandState = (): CommandState => ({ start: true, wrapper: null, optionOperands: 0, wrapperOperands: 0, recurse: false, redirectOperand: false })
 
 function normalizedCommandTokens(input: string, invocations?: CommandInvocation[]): string {
   let state = initialCommandState()
@@ -269,6 +274,8 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
   for (const token of shellPolicyTokens(input)) {
     if (token.kind === 'push') {
       finishCommand()
+      // A substitution can itself supply the redirect's operand.
+      state.redirectOperand = false
       states.push({ ...state })
       state = initialCommandState()
       out.push(token.text)
@@ -286,7 +293,8 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
       out.push(token.text)
       continue
     }
-    if (token.kind === 'redirect') { out.push(token.text); continue }
+    if (token.kind === 'redirect') { state.redirectOperand = true; out.push(token.text); continue }
+    if (state.redirectOperand) { state.redirectOperand = false; out.push(token.text); continue }
     if (!state.start) { out.push(token.text); continue }
     if (state.recurse) {
       out.push(normalizedCommandTokens(token.text, invocations))

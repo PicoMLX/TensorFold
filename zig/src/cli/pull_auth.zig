@@ -118,6 +118,10 @@ pub const Auth = struct {
 
     /// A cached file with a complete raw or nested-encoded key, checked without whole-file allocation.
     pub fn fileContains(auth: Auth, a: Allocator, io: std.Io, path: []const u8) !bool {
+        return auth.fileContainsWithProgress(a, io, path, null);
+    }
+
+    pub fn fileContainsWithProgress(auth: Auth, a: Allocator, io: std.Io, path: []const u8, out: ?*std.Io.Writer) !bool {
         if (auth.bearer == null) return false;
         const file = try std.Io.Dir.cwd().openFile(io, path, .{});
         defer file.close(io);
@@ -125,6 +129,13 @@ pub const Auth = struct {
         defer body.deinit(a);
         var buf: [64 << 10]u8 = undefined;
         var offset: u64 = 0;
+        var progress: @import("pull_progress.zig").Verification = .{ .out = null, .total = 0 };
+        if (out != null) {
+            if (file.stat(io)) |stat| {
+                progress = .begin(out, stat.size);
+            } else |_| {}
+        }
+        defer progress.finish();
         while (true) {
             const n = try file.readPositionalAll(io, &buf, offset);
             if (n == 0) break;
@@ -134,6 +145,7 @@ pub const Auth = struct {
             };
             body.commit(safe.len);
             offset += n;
+            progress.advance(offset);
         }
         _ = body.finish(a) catch |err| {
             if (err == error.HubCredentialBody) return true;

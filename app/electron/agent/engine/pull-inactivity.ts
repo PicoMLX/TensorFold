@@ -1,12 +1,28 @@
 export type PullTimeout = (callback: () => void, ms: number) => () => void
 
+type PullActivity = { phase: 'download' } | { phase: 'verify'; completed: number; total: number }
+
+export function parsePullActivity(line: string): PullActivity | null {
+  const prefix = '[tensorfold-pull] '
+  if (!line.startsWith(prefix)) return null
+  try {
+    const value = JSON.parse(line.slice(prefix.length))
+    if (value?.phase === 'download') return { phase: 'download' }
+    if (value?.phase === 'verify' && Number.isSafeInteger(value.completed) && Number.isSafeInteger(value.total)
+      && value.completed >= 0 && value.total >= value.completed) {
+      return { phase: 'verify', completed: value.completed, total: value.total }
+    }
+  } catch { /* ordinary diagnostics are not activity records */ }
+  return null
+}
+
 const scheduleTimeout: PullTimeout = (callback, ms) => {
   const timer = setTimeout(callback, ms)
   timer.unref?.()
   return () => clearTimeout(timer)
 }
 
-// Only new cache bytes reset the deadline; console output and existing resumed bytes do not.
+// Only advancing transfer or verification bytes reset the deadline; ordinary console output does not.
 export class PullInactivity {
   private bytes = 0
   private cancelTimer: (() => void) | null = null

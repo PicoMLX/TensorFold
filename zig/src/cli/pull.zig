@@ -138,11 +138,11 @@ pub fn runWith(a: Allocator, io: std.Io, out: *std.Io.Writer, err_out: *std.Io.W
         };
         const blob_path = try std.fs.path.join(a, &.{ blobs_dir, blob_name });
         if (e.sha256 != null or e.git_sha1 != null) blob_exists: {
-            if (!(single.cachedMatches(io, blob_path, e) catch false)) {
+            if (!(single.cachedMatchesWithProgress(io, blob_path, e, out) catch false)) {
                 std.Io.Dir.cwd().deleteFile(io, blob_path) catch {};
                 break :blob_exists;
             }
-            if (auth.fileContains(a, io, blob_path) catch true) {
+            if (auth.fileContainsWithProgress(a, io, blob_path, out) catch true) {
                 std.Io.Dir.cwd().deleteFile(io, blob_path) catch {};
                 break :blob_exists;
             }
@@ -199,14 +199,14 @@ fn fetchBig(a: Allocator, io: std.Io, client: *std.http.Client, auth: Auth, out:
         },
     };
     for (big) |b| {
-        if (!try matches(a, io, b)) {
+        if (!try matches(a, io, b, out)) {
             ranged.discard(a, io, b.file, piece);
             ranged.fetch(a, io, &.{b.file}, piece, auth, out) catch |err| {
                 if (err == error.HubDenied) return err;
                 try failed(io, err_out, b.entry.path, err);
                 return false;
             };
-            if (!try matches(a, io, b)) {
+            if (!try matches(a, io, b, out)) {
                 ranged.discard(a, io, b.file, piece);
                 try err_out.print("  {s}: the bytes do not match the hub's sha256 twice; refusing\n", .{b.entry.path});
                 return false;
@@ -219,8 +219,8 @@ fn fetchBig(a: Allocator, io: std.Io, client: *std.http.Client, auth: Auth, out:
     return true;
 }
 
-fn matches(a: Allocator, io: std.Io, b: Big) !bool {
-    return std.mem.eql(u8, &(try ranged.digest(a, io, b.file.path, b.file.size)), &b.entry.sha256.?);
+fn matches(a: Allocator, io: std.Io, b: Big, out: *std.Io.Writer) !bool {
+    return std.mem.eql(u8, &(try ranged.digestWithProgress(a, io, b.file.path, b.file.size, out)), &b.entry.sha256.?);
 }
 
 /// Reads the proxy and timeout settings; false (after saying why, naming only the variable) when one is unusable.

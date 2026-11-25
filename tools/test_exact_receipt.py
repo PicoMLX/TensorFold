@@ -41,6 +41,8 @@ def public(body, cached=0, ignore_seed=False):
 
 class Fake(ThreadingHTTPServer):
     daemon_threads = True
+    # A matrix round opens eight connections together; the default listen backlog admits only five.
+    request_queue_size = 32
 
     def __init__(self, fault=None, disabled=False):
         super().__init__(("127.0.0.1", 0), Handler)
@@ -93,9 +95,13 @@ class Handler(BaseHTTPRequestHandler):
             ids[1] += 100
         if server.fault == "draft" and body.get("draft") is True:
             ids[2] += 100
+        if server.fault == "draft_initial" and body.get("draft") is True and len(messages) <= 1:
+            ids[2] += 100
         if server.fault == "source" and not messages and body.get("draft") is False:
             ids[0] += 100
         if server.fault == "concurrent" and concurrent:
+            ids[3] += 100
+        if server.fault == "plain_concurrent_initial" and concurrent and not body["draft"] and len(messages) <= 1:
             ids[3] += 100
         if server.fault == "empty":
             ids = []
@@ -136,7 +142,7 @@ class Running:
         self.thread.join()
 
 
-def invoke(url, fresh, fault, tmp, full=False, stops=("budget",), item=PROMPT):
+def invoke(url, fresh, fault, tmp, full=False, stops=("budget",), item=PROMPT, streams=(1, 4)):
     prompts = Path(tmp) / "prompts.json"
     output = Path(tmp) / f"{fault}.json"
     prompts.write_text(json.dumps([item]))
@@ -145,7 +151,7 @@ def invoke(url, fresh, fault, tmp, full=False, stops=("budget",), item=PROMPT):
             "--checkpoint-sha256", "b" * 64, "--family", "public-family", "--quant", "public-quant",
             "--tokens", "8", "--eos-tokens", "8", "--skip", "restart"]
     if not full:
-        argv += ["--streams", "1", "4", "--sampling", "greedy", "--stops", *stops]
+        argv += ["--streams", *map(str, streams), "--sampling", "greedy", "--stops", *stops]
     with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()):
         code = er.main()
     return code, json.loads(output.read_text())
@@ -197,6 +203,19 @@ class ReceiptTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertTrue(any(r["kind"] == kind and r["first_diff"] is not None
                                     for r in report["comparisons"]))
+
+    def test_initial_prompt_divergences_compare_equivalent_phase_names(self):
+        cases = (("draft_initial", "drafted_vs_plain", (1,)),
+                 ("plain_concurrent_initial", "solo_vs_concurrent", (1, 4)))
+        for fault, kind, streams in cases:
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as tmp, \
+                    Running(fault) as url, Running(disabled=True) as fresh:
+                code, report = invoke(url, fresh, fault, tmp, streams=streams)
+                self.assertEqual(code, 1)
+                rows = [r for r in report["comparisons"] if r["kind"] == kind and r["first_diff"] is not None]
+                self.assertTrue(rows)
+                self.assertTrue(any("/plain/cold/" in r["reference_request"] for r in rows))
+                self.assertTrue(any("/plain/warm/" in r["reference_request"] for r in rows))
 
     def test_cache_stop_empty_and_request_faults_fail_by_request(self):
         cases = (("cached", "cache"), ("empty", "empty"), ("request_error", "HTTP 500"))

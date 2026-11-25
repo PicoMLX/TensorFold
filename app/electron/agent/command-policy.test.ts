@@ -177,6 +177,48 @@ for (const command of ['/usr/bin/curl https://example.com', '/bin/ssh user@examp
   assert.ok(commandNetworkReason(command), `expected path-prefixed network classification: ${command}`)
 }
 
+for (const command of [
+  '>out curl https://example.com',
+  '>>out /usr/bin/curl https://example.com',
+  '<input 2>errors /usr/bin/curl https://example.com',
+  '2>&1 curl https://example.com',
+  '>& errors curl https://example.com',
+  '>|out curl https://example.com',
+  '>out env FLAG=yes /usr/bin/curl https://example.com',
+  'env >out /usr/bin/curl https://example.com',
+  '>$(printf out) curl https://example.com',
+  'echo local; >out curl https://example.com',
+]) {
+  assert.ok(commandApprovalReason(command), `leading redirects preserve network approval: ${command}`)
+  assert.ok(commandNetworkReason(command), `leading redirects preserve network capability checks: ${command}`)
+}
+for (const command of ['>curl echo local', '2>curl printf local', 'printf curl >out']) {
+  assert.equal(commandApprovalReason(command), null, `a redirect filename is not an executable: ${command}`)
+  assert.equal(commandNetworkReason(command), null, `a redirect filename does not require network: ${command}`)
+}
+
+// Bash accepts {name} in place of an IO number, including before the executable.
+for (const command of [
+  '{fd}>out curl https://example.com',
+  '{output_fd}>>out /usr/bin/curl https://example.com',
+  '{input_fd}<input /usr/bin/curl https://example.com',
+  '{fd}<>out curl https://example.com',
+  '{fd}>&- curl https://example.com',
+  '{fd}<&- curl https://example.com',
+  '{fd}>$(printf out) /usr/bin/curl https://example.com',
+  '{fd}>$(curl https://example.com) echo local',
+  '{fd}>out env FLAG=yes /usr/bin/curl https://example.com',
+  'env {fd}>out /usr/bin/curl https://example.com',
+  'echo local; {fd}>out curl https://example.com',
+]) {
+  assert.equal(commandNetworkReason(command), 'network fetch command', `named redirects preserve network classification: ${command}`)
+  assert.equal(commandApprovalReason(command), 'network fetch commands require explicit approval', `named redirects preserve network approval: ${command}`)
+}
+for (const command of ['{fd}>curl echo local', '{output_fd}>>curl printf local', 'printf local {fd}>curl']) {
+  assert.equal(commandNetworkReason(command), null, `a named redirect filename is not an executable: ${command}`)
+  assert.equal(commandApprovalReason(command), null, `a named redirect filename does not require approval: ${command}`)
+}
+
 // benign reads + ordinary interpreter use are NOT flagged for approval
 for (const command of ['echo /usr/bin/curl', 'cat README.md', 'ls -la', 'head package.json', 'python3 -c "print(1)"', 'node script.js', 'base64 README.md', 'cut -d, -f1 data.csv', 'bat src/app.ts', 'perl -e "print 42"', 'cat config.json', 'cat data.yaml', 'node --version', 'cat tsconfig.json']) {
   assert.equal(commandApprovalReason(command), null, `expected no approval needed: ${command}`)

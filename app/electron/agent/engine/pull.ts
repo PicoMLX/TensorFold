@@ -2,12 +2,12 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import type { Readable } from 'node:stream'
 import type { PullProgress } from '../types'
 import { repoCachedBytes, type EngineBinary } from './paths'
-import { PullInactivity, type PullTimeout } from './pull-inactivity'
+import { parsePullActivity, PullInactivity, type PullTimeout } from './pull-inactivity'
 import { pullEnvironment, pullFailure, redactPullDiagnostic } from './pull-network'
 
 // Runs `tensorfold-native pull` for a repo and then any companion (the 27B's drafter), one process
-// at a time in its own process group. pull prints a line per finished file but no byte counts, so
-// progress is the bytes on disk under each repo's cache folder against the Hub's tree total.
+// at a time in its own process group. Transfer progress is measured from bytes on disk; native
+// verification reports advancing read bytes separately, since hashing does not grow the cache.
 // Cancel kills the group; pulling again resumes from the pieces already on disk.
 
 export interface PullStep {
@@ -92,6 +92,7 @@ export function startPull(opts: PullOptions): PullHandle {
   let cancelled = false
   let env = opts.env
   let stalled: string | null = null
+  let verifying = false
   let killTimer: ReturnType<typeof setTimeout> | null = null
   const emit = () => opts.onUpdate({ ...state })
   const terminate = () => {
@@ -102,7 +103,7 @@ export function startPull(opts: PullOptions): PullHandle {
   }
   const inactivity = new PullInactivity(() => {
     if (!child || cancelled || state.state !== 'running') return
-    stalled = pullFailure('', env, true)
+    stalled = verifying ? 'File verification made no progress for 60 seconds. Download again to retry.' : pullFailure('', env, true)
     inactivity.stop()
     state.message = stalled
     state.phase = 'Stopping stalled download'
@@ -121,11 +122,11 @@ export function startPull(opts: PullOptions): PullHandle {
       let received = 0
       for (const step of opts.steps) received += await repoCachedBytes(opts.hub, step.repo)
       cacheBytes = received
-      inactivity.sample(received)
+      if (!verifying) inactivity.sample(received)
       if (state.totalBytes != null) received = Math.min(received, state.totalBytes)
       if (state.state === 'running') {
         const now = Date.now()
-        const measuredRate = stalled ? null : rate.sample(received, now)
+        const measuredRate = stalled || verifying ? null : rate.sample(received, now)
         const estimate = measuredRate != null && state.totalBytes != null && state.totalBytes > received ? Math.ceil((state.totalBytes - received) / measuredRate) : null
         state.receivedBytes = received
         state.bytesPerSecond = measuredRate
@@ -140,18 +141,36 @@ export function startPull(opts: PullOptions): PullHandle {
   poll.unref?.()
 
   const runStep = (step: PullStep, index: number) => new Promise<void>((resolve, reject) => {
-    state.phase = index === 0 ? `Downloading ${step.repo}` : `Downloading companion ${step.repo}`
+    const downloadPhase = index === 0 ? `Downloading ${step.repo}` : `Downloading companion ${step.repo}`
+    state.phase = downloadPhase
     emit()
     const spec = step.revision ? `${step.repo}@${step.revision}` : step.repo
     const proc = spawn(opts.binary.command, [...opts.binary.args, 'pull', spec], { env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     child = proc
     lines.length = 0
+    verifying = false
     inactivity.start(cacheBytes)
     const onLines = (records: string[]) => {
       let changed = false
       for (const raw of records) {
         // A line past the cap is dropped whole, never cut: a cut can keep a fragment of a URL's path or credentials.
         if (raw.length > MAX_LINE_CHARS) continue
+        const activity = parsePullActivity(raw)
+        if (activity && !stalled && !cancelled) {
+          if (activity.phase === 'verify') {
+            if (!verifying) inactivity.start(0)
+            verifying = true
+            inactivity.sample(activity.completed)
+            state.phase = 'Verifying cached or downloaded files'
+            state.bytesPerSecond = state.etaSeconds = null
+          } else if (verifying) {
+            verifying = false
+            inactivity.start(cacheBytes)
+            state.phase = downloadPhase
+          }
+          changed = true
+          continue
+        }
         const line = redactPullDiagnostic(raw, env).trim()
         if (!line) continue
         lines.push(line)
