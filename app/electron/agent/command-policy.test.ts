@@ -231,6 +231,41 @@ for (const command of [
   assert.equal(commandApprovalReason(command), null, `literal control words do not require fetch approval: ${command}`)
 }
 assert.equal(commandNetworkReason('exec echo local', true), null)
+for (const shell of ['bash', 'sh', 'zsh']) {
+  for (const flags of ['-lc', '-ic', '-ilc']) {
+    for (const command of [
+      `${shell} ${flags} 'curl https://example.com'`,
+      `env FLAG=yes ${shell} ${flags} 'exec curl https://example.com'`,
+      `${shell} ${flags} 'if true; then curl https://example.com; fi'`,
+    ]) {
+      assert.equal(commandNetworkReason(command), 'network fetch command', command)
+      assert.equal(commandApprovalReason(command), 'network fetch commands require explicit approval', command)
+    }
+    const local = `${shell} ${flags} 'printf "curl https://example.com"'`
+    assert.equal(commandNetworkReason(local), null, local)
+    assert.equal(commandApprovalReason(local), null, local)
+  }
+}
+for (const command of [
+  `bash -o errexit -lc 'curl https://example.com'`,
+  `bash +o errexit -lc 'curl https://example.com'`,
+  `bash -O extglob -ic 'curl https://example.com'`,
+  `bash --noprofile --norc -lc 'curl https://example.com'`,
+  `zsh -o shwordsplit -ic 'curl https://example.com'`,
+]) {
+  assert.equal(commandNetworkReason(command), 'network fetch command', command)
+  assert.equal(commandApprovalReason(command), 'network fetch commands require explicit approval', command)
+}
+for (const command of [
+  `bash -oc errexit 'curl https://example.com'`,
+  `zsh --emulate sh -lc 'curl https://example.com'`,
+  `bash --rcfile ./script.sh -ic 'echo local'`,
+]) {
+  assert.equal(commandNetworkReason(command), 'unclassified shell control syntax', command)
+  assert.equal(commandApprovalReason(command), 'unclassified shell control syntax requires explicit approval', command)
+}
+assert.equal(commandNetworkReason(`printf "bash -lc 'curl https://example.com'"`), null)
+assert.equal(commandApprovalReason(`printf "bash -lc 'curl https://example.com'"`), null)
 for (const command of [
   "eval 'curl https://example.com'",
   "builtin eval 'curl https://example.com'",

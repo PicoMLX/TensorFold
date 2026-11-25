@@ -261,12 +261,15 @@ function shellPolicyTokens(input: string): ShellToken[] {
 const SHELL_COMMAND_KEYWORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'while', 'until', 'do', 'done', '!', '{', '}'])
 const UNCLASSIFIED_SHELL_KEYWORDS = new Set(['case', 'function'])
 const OPAQUE_SHELL_EXECUTABLES = new Set(['eval', 'source', '.'])
+const SHELL_FLAG_OPTIONS = new Set(['--noprofile', '--norc', '--login', '--posix', '--restricted', '--verbose', '--version', '--help'])
 const COMMAND_WRAPPERS: Record<string, true> = { bash: true, builtin: true, command: true, env: true, exec: true, nice: true, nohup: true, setsid: true, sh: true, stdbuf: true, time: true, timeout: true, xargs: true, zsh: true }
 const WRAPPER_OPTION_OPERANDS: Record<string, number> = {
   'env:-C': 1, 'env:-S': 1, 'env:-u': 1, 'env:--chdir': 1, 'env:--split-string': 1, 'env:--unset': 1,
   'exec:-a': 1,
   'nice:-n': 1, 'nice:--adjustment': 1,
   'sh:-c': 1, 'bash:-c': 1, 'zsh:-c': 1,
+  'sh:-o': 1, 'bash:-o': 1, 'bash:-O': 1, 'zsh:-o': 1,
+  'sh:+o': 1, 'bash:+o': 1, 'bash:+O': 1, 'zsh:+o': 1,
   'stdbuf:-i': 1, 'stdbuf:-o': 1, 'stdbuf:-e': 1,
   'time:-f': 1, 'time:-o': 1, 'time:--format': 1, 'time:--output': 1,
   'xargs:-a': 1, 'xargs:-d': 1, 'xargs:-E': 1, 'xargs:-e': 1, 'xargs:-f': 1, 'xargs:-I': 1,
@@ -367,10 +370,16 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
       continue
     }
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text)) { out.push(token.text); continue }
-    if (state.wrapper && token.text.startsWith('-')) {
+    const shellWrapper = state.wrapper !== null && /^(?:sh|bash|zsh)$/.test(state.wrapper)
+    if (state.wrapper && (token.text.startsWith('-') || shellWrapper && token.text.startsWith('+'))) {
       const lookup = `${state.wrapper}:${token.text}`
-      state.optionOperands = token.text.includes('=') ? 0 : (WRAPPER_OPTION_OPERANDS[lookup] ?? 0)
-      if (RECURSIVE_WRAPPER_OPTIONS.has(lookup)) state.recurse = true
+      const commandOption = shellWrapper && /^-[A-Za-z]*c[A-Za-z]*$/.test(token.text) && !/[oO]/.test(token.text)
+      if (shellWrapper && !commandOption && !SHELL_FLAG_OPTIONS.has(token.text)
+        && (!/^[-+][A-Za-z]+$/.test(token.text) || /[oOc]/.test(token.text) && !WRAPPER_OPTION_OPERANDS[lookup])) {
+        recordInvocation(state.wrapper, true)
+      }
+      state.optionOperands = commandOption ? 1 : token.text.includes('=') ? 0 : (WRAPPER_OPTION_OPERANDS[lookup] ?? 0)
+      if (RECURSIVE_WRAPPER_OPTIONS.has(lookup) || commandOption) state.recurse = true
       out.push(token.text)
       continue
     }
