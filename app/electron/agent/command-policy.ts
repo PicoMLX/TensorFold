@@ -161,8 +161,8 @@ export function decodeAnsiCEscapes(input: string): string {
   return out
 }
 
-type ShellToken = { kind: 'word' | 'control' | 'redirect' | 'push' | 'pop', text: string }
-type ShellFrame = { quote: "'" | '"' | null, delimiter: '(' | '`' }
+type ShellToken = { kind: 'word' | 'control' | 'redirect' | 'push' | 'pop', text: string, unquoted?: boolean, wordId?: number, unclassified?: boolean }
+type ShellFrame = { quote: "'" | '"' | null, delimiter: '(' | '`', wordId: number | undefined, wordQuoted: boolean }
 
 /** Lex unquoted shell structure while preserving quoted and escaped argument text. */
 function shellPolicyTokens(input: string): ShellToken[] {
@@ -170,16 +170,21 @@ function shellPolicyTokens(input: string): ShellToken[] {
   const frames: ShellFrame[] = []
   const source = shellPolicySource(input)
   let word = ''
+  let wordQuoted = false
+  let wordId: number | undefined
+  let nextWordId = 0
   let quote: "'" | '"' | null = null
   let escaped = false
-  const flush = () => {
-    if (word) tokens.push({ kind: 'word', text: word })
+  const startWord = () => { wordId ??= nextWordId++ }
+  const flush = (endWord = true) => {
+    if (word || (endWord && wordId !== undefined)) tokens.push({ kind: 'word', text: word, unquoted: !wordQuoted, wordId })
     word = ''
+    if (endWord) { wordQuoted = false; wordId = undefined }
   }
   for (let i = 0; i < source.length; i++) {
     const ch = source[i]
     if (escaped) { if (ch !== '\n') word += ch; escaped = false; continue }
-    if (ch === '\\' && quote !== "'") { escaped = true; continue }
+    if (ch === '\\' && quote !== "'") { if (source[i + 1] !== '\n') startWord(); wordQuoted ||= source[i + 1] !== '\n'; escaped = true; continue }
     if (quote === "'") {
       if (ch === "'") quote = null
       else word += ch
@@ -187,22 +192,33 @@ function shellPolicyTokens(input: string): ShellToken[] {
     }
     const top = frames[frames.length - 1]
     if (ch === '`') {
-      flush()
       if (top?.delimiter === '`') {
+        flush()
         tokens.push({ kind: 'pop', text: '`' })
-        quote = frames.pop()?.quote ?? null
+        const frame = frames.pop()!
+        quote = frame.quote
+        wordId = frame.wordId
+        wordQuoted = frame.wordQuoted
       } else {
-        tokens.push({ kind: 'push', text: '`' })
-        frames.push({ quote, delimiter: '`' })
+        startWord()
+        wordQuoted = true
+        flush(false)
+        tokens.push({ kind: 'push', text: '`', wordId })
+        frames.push({ quote, delimiter: '`', wordId, wordQuoted })
+        wordId = undefined
+        wordQuoted = false
         quote = null
       }
       continue
     }
     const substitution = ch === '$' && source[i + 1] === '('
     if (substitution || (ch === '(' && !quote)) {
-      flush()
-      tokens.push({ kind: 'push', text: substitution ? '$(' : '(' })
-      frames.push({ quote, delimiter: '(' })
+      if (substitution) { startWord(); wordQuoted = true }
+      flush(!substitution)
+      tokens.push({ kind: 'push', text: substitution ? '$(' : '(', wordId, unclassified: !substitution && /^\(\s*\)/.test(source.slice(i)) })
+      frames.push({ quote, delimiter: '(', wordId, wordQuoted })
+      wordId = undefined
+      wordQuoted = false
       quote = null
       if (substitution) i++
       continue
@@ -210,12 +226,15 @@ function shellPolicyTokens(input: string): ShellToken[] {
     if (ch === ')' && top?.delimiter === '(' && !quote) {
       flush()
       tokens.push({ kind: 'pop', text: ')' })
-      quote = frames.pop()?.quote ?? null
+      const frame = frames.pop()!
+      quote = frame.quote
+      wordId = frame.wordId
+      wordQuoted = frame.wordQuoted
       continue
     }
     if (ch === quote) { quote = null; continue }
-    if (!quote && (ch === "'" || ch === '"')) { quote = ch; continue }
-    if (quote) { word += ch; continue }
+    if (!quote && (ch === "'" || ch === '"')) { startWord(); wordQuoted = true; quote = ch; continue }
+    if (quote) { wordQuoted = true; word += ch; continue }
     if (ch === '\n' || ch === ';' || ch === '|' || (ch === '&' && !/[<>]/.test(source[i - 1] ?? ''))) {
       flush()
       tokens.push({ kind: 'control', text: ch })
@@ -223,8 +242,8 @@ function shellPolicyTokens(input: string): ShellToken[] {
     }
     if (ch === '>' || ch === '<') {
       // An adjacent IO number or Bash {name} descriptor belongs to the redirect, not the executable.
-      const descriptor = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(word) ? word : ''
-      if (descriptor) word = ''
+      const descriptor = !wordQuoted && /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(word) ? word : ''
+      if (descriptor) { word = ''; wordId = undefined }
       else flush()
       const operator = source.slice(i).match(/^(?:<<<|<<-?|>>|<>|[<>]&|>\||[<>])/)![0]
       tokens.push({ kind: 'redirect', text: descriptor + operator })
@@ -232,15 +251,19 @@ function shellPolicyTokens(input: string): ShellToken[] {
       continue
     }
     if (/\s/.test(ch)) { flush(); continue }
+    startWord()
     word += ch
   }
   flush()
   return tokens
 }
 
-const COMMAND_WRAPPERS: Record<string, true> = { bash: true, command: true, env: true, nice: true, nohup: true, setsid: true, sh: true, stdbuf: true, time: true, timeout: true, xargs: true, zsh: true }
+const SHELL_COMMAND_KEYWORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'while', 'until', 'do', 'done', '!', '{', '}'])
+const UNCLASSIFIED_SHELL_KEYWORDS = new Set(['case', 'function'])
+const COMMAND_WRAPPERS: Record<string, true> = { bash: true, command: true, env: true, exec: true, nice: true, nohup: true, setsid: true, sh: true, stdbuf: true, time: true, timeout: true, xargs: true, zsh: true }
 const WRAPPER_OPTION_OPERANDS: Record<string, number> = {
   'env:-C': 1, 'env:-S': 1, 'env:-u': 1, 'env:--chdir': 1, 'env:--split-string': 1, 'env:--unset': 1,
+  'exec:-a': 1,
   'nice:-n': 1, 'nice:--adjustment': 1,
   'sh:-c': 1, 'bash:-c': 1, 'zsh:-c': 1,
   'stdbuf:-i': 1, 'stdbuf:-o': 1, 'stdbuf:-e': 1,
@@ -252,14 +275,14 @@ const WRAPPER_OPTION_OPERANDS: Record<string, number> = {
 }
 const RECURSIVE_WRAPPER_OPTIONS = new Set(['env:-S', 'env:--split-string', 'sh:-c', 'bash:-c', 'zsh:-c'])
 const LOCAL_ONLY_EXECUTABLES = new Set([
-  'awk', 'basename', 'cat', 'cd', 'chmod', 'command', 'cp', 'cut', 'date', 'dirname', 'echo', 'env',
+  'awk', 'basename', 'cat', 'cd', 'chmod', 'command', 'cp', 'cut', 'date', 'dirname', 'echo', 'env', 'exec',
   'false', 'head', 'less', 'ln', 'ls', 'mkdir', 'more', 'mv', 'nice', 'nl', 'nohup', 'pwd', 'printf',
   'readlink', 'realpath', 'rm', 'rmdir', 'sed', 'setsid', 'sleep', 'sort', 'stdbuf', 'tail', 'tee',
   'time', 'timeout', 'touch', 'tr', 'true', 'uniq', 'wc', 'which', 'xargs',
 ])
 
 type CommandState = { start: boolean, wrapper: string | null, optionOperands: number, wrapperOperands: number, recurse: boolean, redirectOperand: boolean }
-type CommandInvocation = { name: string, start: number, end: number, text?: string }
+type CommandInvocation = { name: string, start: number, end: number, text?: string, unclassified?: boolean }
 const initialCommandState = (): CommandState => ({ start: true, wrapper: null, optionOperands: 0, wrapperOperands: 0, recurse: false, redirectOperand: false })
 
 function normalizedCommandTokens(input: string, invocations?: CommandInvocation[]): string {
@@ -267,7 +290,15 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
   const states: CommandState[] = []
   const out: string[] = []
   const ownedInvocations: CommandInvocation[] = []
+  const operandWords = new Set<number>()
   let active: CommandInvocation[] = []
+  const recordInvocation = (name: string, unclassified = false) => {
+    if (!invocations) return
+    const invocation = { name, start: out.length, end: out.length, unclassified }
+    invocations.push(invocation)
+    ownedInvocations.push(invocation)
+    active.push(invocation)
+  }
   const finishCommand = () => {
     for (const invocation of active) invocation.end = out.length
     active = []
@@ -275,7 +306,13 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
   for (const token of shellPolicyTokens(input)) {
     if (token.kind === 'push') {
       finishCommand()
-      // A substitution can itself supply the redirect's operand.
+      if (token.unclassified) recordInvocation('function', true)
+      // A substitution can itself supply a redirect, option or positional wrapper operand.
+      if (token.wordId !== undefined && !operandWords.has(token.wordId)) {
+        if (state.redirectOperand) operandWords.add(token.wordId)
+        else if (state.optionOperands > 0) { operandWords.add(token.wordId); state.optionOperands-- }
+        else if (state.wrapperOperands > 0) { operandWords.add(token.wordId); state.wrapperOperands-- }
+      }
       state.redirectOperand = false
       states.push({ ...state })
       state = initialCommandState()
@@ -295,7 +332,13 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
       continue
     }
     if (token.kind === 'redirect') { state.redirectOperand = true; out.push(token.text); continue }
-    if (state.redirectOperand) { state.redirectOperand = false; out.push(token.text); continue }
+    if (token.wordId !== undefined && operandWords.has(token.wordId)) { out.push(token.text); continue }
+    if (state.redirectOperand) {
+      state.redirectOperand = false
+      if (token.wordId !== undefined) operandWords.add(token.wordId)
+      out.push(token.text)
+      continue
+    }
     if (!state.start) { out.push(token.text); continue }
     if (state.recurse) {
       out.push(normalizedCommandTokens(token.text, invocations))
@@ -305,12 +348,19 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
     }
     if (state.optionOperands > 0) {
       state.optionOperands--
+      if (token.wordId !== undefined) operandWords.add(token.wordId)
       out.push(token.text)
       continue
     }
     if (state.wrapperOperands > 0) {
       state.wrapperOperands--
+      if (token.wordId !== undefined) operandWords.add(token.wordId)
       out.push(token.text)
+      continue
+    }
+    if (token.unquoted && (!state.wrapper || state.wrapper === 'time') && SHELL_COMMAND_KEYWORDS.has(token.text)) {
+      out.push(token.text)
+      state = initialCommandState()
       continue
     }
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text)) { out.push(token.text); continue }
@@ -322,12 +372,7 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
       continue
     }
     const name = token.text.slice(token.text.lastIndexOf('/') + 1).toLowerCase()
-    if (invocations) {
-      const invocation = { name, start: out.length, end: out.length }
-      invocations.push(invocation)
-      ownedInvocations.push(invocation)
-      active.push(invocation)
-    }
+    recordInvocation(name, token.unquoted && (!state.wrapper || state.wrapper === 'time') && UNCLASSIFIED_SHELL_KEYWORDS.has(token.text))
     out.push(name)
     if (COMMAND_WRAPPERS[name]) {
       state.wrapper = name
@@ -448,6 +493,7 @@ export function commandApprovalReason(command: string): string | null {
     if (networkReason === 'network package command') return 'package install/execution commands require explicit approval'
     if (networkReason === 'shell network redirection') return 'shell network redirection requires explicit approval'
     if (networkReason === 'inline interpreter network access') return 'inline interpreter network access requires explicit approval'
+    if (networkReason === 'unclassified shell control syntax') return 'unclassified shell control syntax requires explicit approval'
   }
   for (const candidate of [classified]) {
     for (const { re, reason } of APPROVAL_COMMAND_PATTERNS) {
@@ -477,6 +523,7 @@ export function commandNetworkReason(command: string, failClosedUnsandboxed = fa
   const invocations: CommandInvocation[] = []
   normalizedCommandTokens(normalized, invocations)
   for (const invocation of invocations) {
+    if (invocation.unclassified) return 'unclassified shell control syntax'
     const direct = directReasons.get(invocation.name)
     if (direct) return direct
     const text = invocation.text ?? invocation.name

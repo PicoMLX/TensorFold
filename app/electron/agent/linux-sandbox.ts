@@ -227,6 +227,8 @@ export function gitMetadataArgs(cwd: string): string[] {
 export interface LinuxSandboxProfileOptions {
   allowCwdWrite: boolean
   allowNetwork: boolean
+  /** Only a fresh, caller-owned scratch directory, never the original workspace. */
+  writableScratch?: boolean
   extraReadRoots?: Array<string | null | undefined>
   /** False for the capability probe, which must not inspect or depend on the caller's workspace. */
   production?: boolean
@@ -257,8 +259,9 @@ export function linuxReadRoots(cwd: string, options: LinuxSandboxProfileOptions)
 /** One final decision per resolved path; later mounts win, so children must follow their parents. */
 export function planLinuxMounts(cwd: string, options: LinuxSandboxProfileOptions): Array<{ mode: 'ro' | 'rw'; path: string }> {
   const readRoots = linuxReadRoots(cwd, options)
+  const writableCwd = options.allowCwdWrite || options.writableScratch
   const writeRoots = resolveRoots([
-    ...(options.allowCwdWrite ? [cwd] : []),
+    ...(writableCwd ? [cwd] : []),
     os.tmpdir(),
     process.env.TMPDIR,
   ])
@@ -268,7 +271,7 @@ export function planLinuxMounts(cwd: string, options: LinuxSandboxProfileOptions
   for (const root of writeRoots) byPath.set(root.resolved, 'rw')
   // A read-only workspace always wins, even when it sits inside a writable temporary parent.
   const canonicalCwd = (() => { try { return realpathSync(cwd) } catch { return path.resolve(cwd) } })()
-  if (!options.allowCwdWrite) byPath.set(canonicalCwd, 'ro')
+  if (!writableCwd) byPath.set(canonicalCwd, 'ro')
   return [...byPath.entries()]
     .map(([mountPath, mode]) => ({ mode, path: mountPath }))
     .sort((a, b) => a.path.length - b.path.length || a.path.localeCompare(b.path))

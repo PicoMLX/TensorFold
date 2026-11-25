@@ -17,8 +17,7 @@ var threaded: std.Io.Threaded = .init_single_threaded;
 /// status -1: `n` reply tokens, valid during the call; status 0 and up: the request's last call, with its usage.
 const Callback = *const fn (ctx: ?*anyopaque, tokens: ?[*]const i32, n: i32, status: i32, usage: ?*const [6]i64) callconv(.c) void;
 
-/// One loaded checkpoint; requests in flight are in `jobs` until their last callback has returned.
-/// Close waits for those and for every exported call still running on it (`calls`), so neither reads a freed handle.
+/// Closing waits for every exported call and final callback before freeing the checkpoint handle.
 const Handle = struct {
     arena: std.heap.ArenaAllocator, // what the open read and the engine was handed: the folder, its type, the end tokens
     opened: api.Opened = undefined,
@@ -124,8 +123,7 @@ const Handle = struct {
     }
 };
 
-/// A checkpoint's tokenizer: what the caller writes is encoded with written-out specials as their ids and nothing added
-/// at either end; ids decode to the bytes they stand for, specials as their text.
+/// Specials encode and decode literally; encoding adds no boundary tokens.
 const Text = union(enum) {
     hf: tokenizer.Tokenizer,
     kimi: *KimiText,
@@ -146,8 +144,7 @@ const Text = union(enum) {
         };
     }
 
-    /// Each id's exact bytes (specials as their text), where the decoder reads every token alone (ByteLevel,
-    /// ByteFallback): `decode` would put U+FFFD in place of a character split between two replies.
+    /// Token-local decoders must preserve split character bytes instead of emitting U+FFFD.
     fn raw(tok: *const tokenizer.Tokenizer, ids: []const u32) ![]u8 {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(gpa);
@@ -232,7 +229,7 @@ fn micros(ns: i96) i64 {
     return @intCast(@divTrunc(@max(ns, 0), 1000));
 }
 
-/// The checkpoint's end tokens as the server reads them: config.json, generation_config.json, the tokenizer's eos_token.
+/// Resolve end tokens from checkpoint, generation and tokenizer metadata, as the server does.
 fn eosIds(a: Allocator, io: std.Io, dir: []const u8, config: std.json.Value, tok: *const tokenizer.Tokenizer) ![]const u32 {
     const vocab = try tokenizer.eos.vocabulary(config, tok.id_to_token.tokens.items.len);
     var out: std.ArrayList(u32) = .empty;
@@ -273,9 +270,7 @@ fn servable(a: Allocator, io: std.Io, dir: []const u8) bool {
     return false;
 }
 
-/// The folder's weight format in the engine registry's words (native/metal.zig `families`), from its metadata alone:
-/// an EXLR8 manifest; MLX's `quantization` (affine bits and group, or its named mode); else `quantization_config`
-/// (the model's or its text_config's) as compressed-tensors, modelopt or block FP8 write it; else bf16.
+/// Infer the engine registry's weight-format name from checkpoint metadata.
 fn format(a: Allocator, io: std.Io, dir: []const u8) ![]const u8 {
     const manifest = try std.fs.path.join(a, &.{ dir, "manifests", "exlr8-manifest-home.json" }); // glm_dsa's
     if (std.Io.Dir.cwd().access(io, manifest, .{})) |_| return "exlr8" else |_| {}
@@ -343,8 +338,7 @@ fn write(out: ?[*]u8, cap: i32, text: []const u8) void {
     buf[n] = 0;
 }
 
-/// 2: `pico_tf_tokenize` takes the text's byte length, so a text may hold NUL characters.
-/// 3: a request's usage has a sixth value, the end token that stopped the reply or -1.
+/// ABI 3 adds stopped-token usage; ABI 2 introduced length-aware tokenization, including embedded NULs.
 export fn pico_tf_abi_version() i32 {
     return 3;
 }
@@ -513,8 +507,7 @@ export fn pico_tf_memory(handle: ?*Handle, out: ?*[3]i64) i32 {
     return 0;
 }
 
-/// A Kimi K3 folder in the release layout (tiktoken.model, tokenizer_config.json, config.json) and no weights:
-/// 256 byte ranks and 32 merges, so its 544 ids are a vocabulary the engine's geometry check admits.
+/// Weightless Kimi K3 fixture: 256 byte ranks and 32 merges provide a geometry-compatible vocabulary.
 fn kimiFixture(io: std.Io, dir: std.Io.Dir) !void {
     var model: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer model.deinit();

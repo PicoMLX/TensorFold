@@ -5,6 +5,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 PUBLIC = re.compile(r"[A-Za-z0-9_.:+@-]{1,128}\Z")
@@ -191,25 +192,32 @@ def run_matrix(base, prompts, args, fresh_base=None):
     out = {"results": {}, "comparisons": [], "failures": [], "rounds": []}
     streams = sorted(set(args.streams))
     drafts = [False] if "draft" in args.skip else [False, True]
+    run_salt = uuid.uuid4().hex
     for sampling in args.sampling:
         for stop in args.stops:
             for draft in drafts:
                 for count in streams:
-                    for item in prompts:
+                    for index, item in enumerate(prompts):
+                        salt = f"exact-{run_salt}-{index}-{sampling}-{stop}-{int(draft)}-{count}"
+                        def isolated_spec(phase, peer, followup=False, reply=""):
+                            spec = spec_for(item, args, sampling, stop, count, draft, phase, peer, followup, reply)
+                            if phase != "fresh":
+                                spec["body"]["cache_salt"] = salt
+                            return spec
                         qualified = sampling == "greedy" and stop == "budget" and not draft and count == 1
                         initial, repeated = ("cold", "warm") if qualified else ("first", "repeat")
-                        initial_specs = [spec_for(item, args, sampling, stop, count, draft, initial, peer)
+                        initial_specs = [isolated_spec(initial, peer)
                                          for peer in range(count)]
                         first = perform_round(out, base, initial_specs, args)
-                        repeat_specs = [spec_for(item, args, sampling, stop, count, draft, repeated, peer)
+                        repeat_specs = [isolated_spec(repeated, peer)
                                         for peer in range(count)]
                         repeat = perform_round(out, base, repeat_specs, args)
                         pair_phase(out, "cold_vs_warm" if qualified else "repeatability", first, repeat, range(count))
                         if count != 1 or 0 not in first:
                             continue
                         reply = first[0]["token_ids"] if isinstance(item["prompt"], list) else first[0]["content"]
-                        fresh_spec = spec_for(item, args, sampling, stop, 1, draft, "fresh", 0, True, reply)
-                        resumed_spec = spec_for(item, args, sampling, stop, 1, draft, "resumed", 0, True, reply)
+                        fresh_spec = isolated_spec("fresh", 0, True, reply)
+                        resumed_spec = isolated_spec("resumed", 0, True, reply)
                         if fresh_base is None:
                             out["failures"].append({"request": fresh_spec["request"],
                                                     "reason": "cache-disabled fresh endpoint was not supplied"})
@@ -218,7 +226,7 @@ def run_matrix(base, prompts, args, fresh_base=None):
                         resumed = perform_round(out, base, [resumed_spec], args)
                         pair_phase(out, "fresh_vs_resumed", fresh, resumed, [0])
                         if sampling == "seeded" and not draft and 0 in first:
-                            other = spec_for(item, args, sampling, stop, 1, False, "seed-control", 0)
+                            other = isolated_spec("seed-control", 0)
                             other["body"]["seed"] = args.seed + 1
                             changed = perform_round(out, base, [other], args)
                             if 0 in changed and first[0]["token_ids"] == changed[0]["token_ids"]:

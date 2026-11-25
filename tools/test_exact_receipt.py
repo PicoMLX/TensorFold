@@ -49,6 +49,7 @@ class Fake(ThreadingHTTPServer):
         self.fault, self.active, self.seen, self.lock = fault, 0, {}, threading.Lock()
         self.cache_disabled = disabled
         self.requests = []
+        self.prefixes = {}
     @property
     def url(self):
         return f"http://127.0.0.1:{self.server_port}"
@@ -73,9 +74,17 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         server = self.server
         server.requests.append(body)
+        if server.cache_disabled and body.get("cache_salt"):
+            return self.reply(400, {"error": "cache_salt is unsupported without a prompt cache"})
         messages = body.get("messages") or []
-        key = json.dumps(messages, sort_keys=True)
+        salt = None if server.fault == "ignored_salt" else body.get("cache_salt")
+        payload = messages or body.get("prompt")
+        key = json.dumps([salt, payload], sort_keys=True)
         with server.lock:
+            prefixes = server.prefixes.setdefault(salt, [])
+            prefix_seen = any(isinstance(payload, type(prefix)) and payload[:len(prefix)] == prefix
+                              for prefix in prefixes)
+            prefixes.append(payload)
             server.seen[key] = server.seen.get(key, 0) + 1
             arrival = server.seen[key]
             server.active += 1
@@ -85,7 +94,6 @@ class Handler(BaseHTTPRequestHandler):
             server.active -= 1
         if server.fault == "request_error" and body.get("draft") is False:
             return self.reply(500, {"error": {"message": "private details never enter a receipt"}})
-        prefix_seen = len(messages) > 1 and server.seen.get(json.dumps(messages[:1], sort_keys=True), 0) > 0
         out = public(body, 0 if server.cache_disabled else 9 if arrival > 1 or prefix_seen else 0,
                      server.fault == "seed_ignored")
         ids = out["ids"][:]
@@ -142,10 +150,10 @@ class Running:
         self.thread.join()
 
 
-def invoke(url, fresh, fault, tmp, full=False, stops=("budget",), item=PROMPT, streams=(1, 4)):
+def invoke(url, fresh, fault, tmp, full=False, stops=("budget",), item=PROMPT, streams=(1, 4), items=None):
     prompts = Path(tmp) / "prompts.json"
     output = Path(tmp) / f"{fault}.json"
-    prompts.write_text(json.dumps([item]))
+    prompts.write_text(json.dumps(items if items is not None else [item]))
     argv = ["exact_restarts.py", "--base", url, "--fresh-base", fresh, "--prompts", str(prompts),
             "--output", str(output), "--build-id", "public-build", "--checkpoint-id", "public-checkpoint",
             "--checkpoint-sha256", "b" * 64, "--family", "public-family", "--quant", "public-quant",
@@ -177,6 +185,30 @@ class ReceiptTests(unittest.TestCase):
             self.assertNotIn(private, text)
         kinds = {r["kind"] for r in report["comparisons"]}
         self.assertTrue({"cold_vs_warm", "fresh_vs_resumed", "drafted_vs_plain", "solo_vs_concurrent"} <= kinds)
+
+    def test_identical_cases_and_repeated_attached_runs_have_isolated_cold_baselines(self):
+        cases = [PROMPT, {**PROMPT, "name": "same-prompt-again"}]
+        with tempfile.TemporaryDirectory() as tmp, Running() as url, Running(disabled=True) as fresh:
+            for run in range(2):
+                with self.subTest(run=run):
+                    code, report = invoke(url, fresh, f"isolation-{run}", tmp, items=cases)
+                    self.assertEqual(code, 0, report["failures"])
+                    requests = report["runs"]["attached"]["requests"].values()
+                    self.assertEqual(sum(r["phase"] == "cold" for r in requests), 2)
+                    self.assertTrue(all(r["cached_tokens"] == 0 for r in requests if r["phase"] == "cold"))
+                    self.assertTrue(all(r["cached_tokens"] > 0 for r in requests if r["phase"] == "warm"))
+
+    def test_prefix_related_cases_are_cold_and_ignored_isolation_is_detected(self):
+        cases = [TEXT_PROMPT, {**TEXT_PROMPT, "name": "extended", "prompt": TEXT_PROMPT["prompt"] + " More?"}]
+        for fault in (None, "ignored_salt"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as tmp, \
+                    Running(fault) as url, Running(disabled=True) as fresh:
+                code, report = invoke(url, fresh, fault or "prefix", tmp, items=cases, streams=(1,))
+                if fault:
+                    self.assertEqual(code, 1)
+                    self.assertTrue(any("cold/fresh" in r["reason"] for r in report["failures"]))
+                else:
+                    self.assertEqual(code, 0, report["failures"])
 
     def test_text_completion_followup_includes_the_first_reply(self):
         base_runner, fresh_runner = Running(), Running(disabled=True)

@@ -178,6 +178,77 @@ for (const command of ['/usr/bin/curl https://example.com', '/bin/ssh user@examp
 }
 
 for (const command of [
+  'if true; then curl https://example.com; fi',
+  'if curl https://example.com; then echo done; fi',
+  'if false; then echo local; elif true; then curl https://example.com; else echo done; fi',
+  'while false; do curl https://example.com; done',
+  'while curl https://example.com; do true; done',
+  'until true; do curl https://example.com; done',
+  'until curl https://example.com; do true; done',
+  'for item in local; do curl https://example.com; done',
+  '! curl https://example.com',
+  'time ! curl https://example.com',
+  '{ curl https://example.com; }',
+  'exec curl https://example.com',
+  'exec -a curl /usr/bin/curl https://example.com',
+  'exec -a "" curl https://example.com',
+  'exec -a "$(echo local)local" curl https://example.com',
+  'exec -a pre$(echo local)post curl https://example.com',
+  'exec -a >pre$(printf out) alias curl https://example.com',
+  'exec >out /usr/bin/curl https://example.com',
+  'exec -a "$(curl https://example.com)" echo local',
+  'if true; then exec env FLAG=yes /usr/bin/curl https://example.com; fi',
+  "sh -c 'if true; then exec curl https://example.com; fi'",
+  'echo $(if true; then curl https://example.com; fi)',
+]) {
+  assert.equal(commandNetworkReason(command), 'network fetch command', `shell control syntax preserves fetch classification: ${command}`)
+  assert.equal(commandApprovalReason(command), 'network fetch commands require explicit approval', `shell control syntax preserves fetch approval: ${command}`)
+}
+for (const command of [
+  'if true; then echo curl; else printf wget; fi',
+  'while false; do printf curl; done',
+  'for item in curl wget; do echo "$item"; done',
+  '! echo curl',
+  '{ printf curl; }',
+  'exec -a curl printf local',
+  'exec -a "$(echo local)" printf curl',
+  'exec -a `echo local` printf curl',
+  'exec -a "$(echo local)curl" printf local',
+  'exec -a `echo local`curl printf local',
+  'exec -a pre$(echo local)curl printf local',
+  'if true; then printf "curl https://example.com"; fi',
+  '"if" curl https://example.com',
+  'i""f curl https://example.com',
+  '\\if curl https://example.com',
+  '"$(true)"if curl https://example.com',
+  'printf "if true; then curl https://example.com; fi"',
+  "sh -c 'printf \"exec curl https://example.com\"'",
+]) {
+  assert.equal(commandNetworkReason(command), null, `literal control words are not fetch commands: ${command}`)
+  assert.equal(commandApprovalReason(command), null, `literal control words do not require fetch approval: ${command}`)
+}
+assert.equal(commandNetworkReason('exec echo local', true), null)
+for (const command of [
+  'case x in x) curl https://example.com;; esac',
+  'f() { curl https://example.com; }; f',
+  'f () { curl https://example.com; }; f',
+  'function f { curl https://example.com; }; f',
+  'if true; then case x in x) curl https://example.com;; esac; fi',
+  "sh -c 'f() { curl https://example.com; }; f'",
+]) {
+  assert.equal(commandNetworkReason(command), 'unclassified shell control syntax', `unsupported executable structure fails closed: ${command}`)
+  assert.equal(commandApprovalReason(command), 'unclassified shell control syntax requires explicit approval', `unsupported executable structure requires approval: ${command}`)
+}
+for (const command of [
+  "printf 'case x in x) curl https://example.com;; esac'",
+  "printf 'f() { curl https://example.com; }; f'",
+  "echo 'function f { curl https://example.com; }; f'",
+]) {
+  assert.equal(commandNetworkReason(command), null)
+  assert.equal(commandApprovalReason(command), null)
+}
+
+for (const command of [
   "npm install left-pad; sh -c 'echo done'",
   "sh -c 'echo done'; npm install left-pad",
   "sh -c 'npm install left-pad'; echo done",

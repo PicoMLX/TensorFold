@@ -217,7 +217,8 @@ export async function runSandboxedCommand(command: string, options: SandboxedCom
   const hostCwd = realpathSync(options.cwd)
   const profile = options.profile ?? sandboxProfileForCommand(command)
   const allowNetwork = sandboxProfileAllowsNetwork(profile, options.allowNetwork)
-  const cwd = prepareSandboxExecutionCwd(hostCwd, profile)
+  const execution = prepareSandboxExecution(hostCwd, profile)
+  const { cwd } = execution
   // Only sandbox-owned package-install scratch is removed after artifact capture.
   const ephemeralCwd = cwd === hostCwd ? null : cwd
   try {
@@ -235,10 +236,9 @@ export async function runSandboxedCommand(command: string, options: SandboxedCom
       return attachSandboxArtifacts(command, cwd, result, baseline)
     }
     if (canUseLinuxSandbox()) {
-      const definition = SANDBOX_PROFILES[profile]
       let bwrapArgv: string[]
       try {
-        bwrapArgv = linuxSandboxArgv(cwd, { allowCwdWrite: definition.allowCwdWrite, allowNetwork })
+        bwrapArgv = linuxSandboxArgv(cwd, { ...execution.linuxOptions, allowNetwork })
       } catch (error) {
         // A workspace whose git metadata the profile cannot protect keeps commands refused.
         if (!(error instanceof LinuxSandboxError)) throw error
@@ -287,6 +287,11 @@ export async function runSandboxedCommand(command: string, options: SandboxedCom
       try { rmSync(ephemeralCwd, { recursive: true, force: true }) } catch { /* best-effort cleanup */ }
     }
   }
+}
+
+export function prepareSandboxExecution(hostCwd: string, profile: SandboxProfileId) {
+  const cwd = prepareSandboxExecutionCwd(hostCwd, profile)
+  return { cwd, linuxOptions: { allowCwdWrite: SANDBOX_PROFILES[profile].allowCwdWrite, writableScratch: cwd !== hostCwd } }
 }
 
 function prepareSandboxExecutionCwd(hostCwd: string, profile: SandboxProfileId): string {
