@@ -178,6 +178,25 @@ for (const command of ['/usr/bin/curl https://example.com', '/bin/ssh user@examp
 }
 
 for (const command of [
+  "npm install left-pad; sh -c 'echo done'",
+  "sh -c 'echo done'; npm install left-pad",
+  "sh -c 'npm install left-pad'; echo done",
+  "sh -c 'npm install left-pad; sh -c \"echo done\"'",
+  "sh -c 'sh -c \"echo done\"; npm install left-pad'",
+  "python3 -m pip install requests; sh -c 'echo done'",
+]) {
+  assert.equal(commandNetworkReason(command), 'network package command', `recursive parses preserve package commands: ${command}`)
+  assert.equal(commandApprovalReason(command), 'package install/execution commands require explicit approval', `recursive parses preserve package approval: ${command}`)
+}
+const interpreterBeforeShell = 'python3 -c "import urllib.request"; sh -c "echo done"'
+assert.equal(commandNetworkReason(interpreterBeforeShell), 'inline interpreter network access')
+assert.equal(commandApprovalReason(interpreterBeforeShell), 'inline interpreter network access requires explicit approval')
+for (const command of ["echo local; sh -c 'echo done'", "sh -c 'printf \"npm install left-pad\"'; echo done"]) {
+  assert.equal(commandNetworkReason(command), null, `recursive literal arguments are not network commands: ${command}`)
+  assert.equal(commandApprovalReason(command), null, `recursive literal arguments do not require approval: ${command}`)
+}
+
+for (const command of [
   '>out curl https://example.com',
   '>>out /usr/bin/curl https://example.com',
   '<input 2>errors /usr/bin/curl https://example.com',

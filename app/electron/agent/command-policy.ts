@@ -266,6 +266,7 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
   let state = initialCommandState()
   const states: CommandState[] = []
   const out: string[] = []
+  const ownedInvocations: CommandInvocation[] = []
   let active: CommandInvocation[] = []
   const finishCommand = () => {
     for (const invocation of active) invocation.end = out.length
@@ -324,6 +325,7 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
     if (invocations) {
       const invocation = { name, start: out.length, end: out.length }
       invocations.push(invocation)
+      ownedInvocations.push(invocation)
       active.push(invocation)
     }
     out.push(name)
@@ -336,10 +338,9 @@ function normalizedCommandTokens(input: string, invocations?: CommandInvocation[
     }
   }
   finishCommand()
-  if (invocations) {
-    for (const invocation of invocations) {
-      if (invocation.text === undefined) invocation.text = out.slice(invocation.start, invocation.end).join(' ')
-    }
+  // Recursive parses share the result list, but their token offsets belong to their own output arrays.
+  for (const invocation of ownedInvocations) {
+    invocation.text = out.slice(invocation.start, invocation.end).join(' ')
   }
   return out.join(' ')
 }
