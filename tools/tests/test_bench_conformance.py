@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import conformance
@@ -13,6 +15,7 @@ from conformance import drafted_gate, equality_gate, refusals_gate, reply_row, r
 from conformance_lifecycle import cancel_gate, census, evict_gate
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_served_api import FAULTS, doc, fake, script, serve
+import fake_served_api
 
 PROFILE = Path(__file__).resolve().parents[1] / "conformance_profiles" / "qwen35-cuda.json"
 
@@ -45,6 +48,12 @@ class ComparisonTests(unittest.TestCase):
         self.assertIsNone(same(a, {**a, "error": "x"}))
         self.assertEqual(tally([(a, a), (a, b), (a, {})]), {"equal": 1, "unequal": 1, "unverified": 1})
 
+    def test_empty_replies_are_unverified(self):
+        # Two empty replies hash the same: equal without a token is no evidence.
+        empty = reply_row(200, doc(tokens=0, text=""))
+        self.assertIsNone(same(empty, empty))
+        self.assertIsNone(same(reply_row(200, doc()), {**reply_row(200, doc()), "tokens": None}))
+
     def test_equality_gate_fails_on_unequal_unverified_or_empty(self):
         a, b = reply_row(200, doc()), reply_row(200, doc(sha="b" * 64))
         self.assertTrue(equality_gate("g", [(a, a)])["passed"])
@@ -54,10 +63,29 @@ class ComparisonTests(unittest.TestCase):
 
     def test_drafted_gate_is_vacuous_without_an_accepted_draft(self):
         plain, drafted = reply_row(200, doc(accepted=0, drafted=0)), reply_row(200, doc(accepted=0, drafted=7))
-        gate = drafted_gate([(plain, drafted)])
+        gate = drafted_gate({"greedy": [(plain, drafted)]})
         self.assertFalse(gate["passed"])
         self.assertIn("vacuous", gate["line"])
-        self.assertTrue(drafted_gate([(plain, reply_row(200, doc()))])["passed"])
+        self.assertTrue(drafted_gate({"greedy": [(plain, reply_row(200, doc()))]})["passed"])
+
+    def test_drafted_gate_needs_drafts_in_each_mode_and_none_in_plain(self):
+        plain, good, idle = (reply_row(200, doc(accepted=a, drafted=d)) for a, d in ((0, 0), (2, 3), (0, 3)))
+        sampled_idle = drafted_gate({"greedy": [(plain, good)], "sampled": [(plain, idle)]})
+        self.assertFalse(sampled_idle["passed"])
+        self.assertIn("no draft accepted sampled", sampled_idle["line"])
+        both_drafted = drafted_gate({"greedy": [(good, good)]})
+        self.assertFalse(both_drafted["passed"])
+        self.assertIn("plain replies drafted 3 tokens", both_drafted["line"])
+
+    def test_seeded_and_overlap_problems(self):
+        a, b = reply_row(200, doc()), reply_row(200, doc(sha="b" * 64))
+        self.assertIsNone(conformance.seeded_problem([(a, a), (a, b)]))
+        self.assertIn("never reached sampling", conformance.seeded_problem([(a, a)]))
+        self.assertIsNone(conformance.overlap_problem([2, 8]))
+        self.assertIn("2 of 3 batches", conformance.overlap_problem([2, 1, None]))
+        self.assertIsNone(conformance.batch_drafts_problem({2: [5, 0], "mixed": [1, 0]}))
+        self.assertIn("accepted no draft at [2]; plain rows drafted at {'mixed': 3}",
+                      conformance.batch_drafts_problem({2: [0, 0], "mixed": [1, 3]}))
 
     def test_resumed_gate_asserts_both_cache_counts(self):
         def turns(fresh_cached, resumed_cached):
@@ -134,7 +162,10 @@ class GateRunTests(unittest.TestCase):
 
     NAMES = {"drafted": "drafted == plain", "repeat": "repeat == first", "concurrent": "concurrent == solo",
              "resumed": "resumed == fresh", "refusals": "refusals", "cancel": "cancel", "evict": "evict",
-             "cancel_lane": "cancel", "cancel_free": "cancel", "cancel_reply": "cancel", "cancel_health": "cancel"}
+             "cancel_lane": "cancel", "cancel_free": "cancel", "cancel_reply": "cancel", "cancel_health": "cancel",
+             "undrafted": "drafted == plain", "plain_drafts": "drafted == plain", "sampled_drafts": "drafted == plain",
+             "unsampled": "repeat == first", "serial": "concurrent == solo", "empty": "drafted == plain"}
+    JSON_ONLY = ("undrafted", "sampled_drafts", "unsampled", "serial")  # faults the stream test leaves out
     GATE_OF = {fault: name.split()[0] for fault, name in NAMES.items() if fault in FAULTS}  # the gate a fault turns red
 
     def run_kit(self, *extra, fault=None, shape=None, **changes):
@@ -143,8 +174,19 @@ class GateRunTests(unittest.TestCase):
             profile[block]["settle_s"] = 1  # a held lane fails in a second, not a minute
         profile.update(changes)
         out = io.StringIO()
-        with tempfile.TemporaryDirectory() as tmp, fake(True, fault, **(shape or {})) as url, fake(False) as fresh, \
-                contextlib.redirect_stdout(out):
+        batches, together = threading.Event(), conformance.together
+
+        def counted_batch(client, bodies, delays=None):
+            if len(bodies) > 1:
+                batches.set()
+            try:
+                return together(client, bodies, delays)
+            finally:
+                batches.clear()
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                fake(True, fault, census_batches=batches, **(shape or {})) as url, fake(False) as fresh, \
+                contextlib.redirect_stdout(out), mock.patch.object(conformance, "together", counted_batch):
             path = Path(tmp) / "profile.json"
             path.write_text(json.dumps(profile))
             code = conformance.main([str(path), "--url", url, "--fresh-url", fresh, *extra])
@@ -165,6 +207,42 @@ class GateRunTests(unittest.TestCase):
         self.assertEqual(len(lines), len(conformance.GATES))
         self.assertTrue(all(line.startswith("PASS") for line in lines), lines)
 
+    def test_a_batch_waits_for_its_late_partner_and_first_census(self):
+        batches, first_started, first_finished, second_started = (threading.Event() for _ in range(4))
+        answer = fake_served_api.FakeEngine.answer
+
+        def delayed_answer(handler, body, key):
+            second = body["messages"][0]["content"] == "second"
+            if second:
+                first_started.wait(fake_served_api.COUNTED)
+                first_finished.wait(2 * fake_served_api.WATCHED_WINDOW)
+                second_started.set()
+            else:
+                first_started.set()
+            try:
+                return answer(handler, body, key)
+            finally:
+                if not second:
+                    first_finished.set()
+
+        with fake(True, census_batches=batches) as url, \
+                mock.patch.object(fake_served_api.FakeEngine, "answer", delayed_answer):
+            client = conformance.Client(url, "fake", timeout=10)
+            get = client.get
+
+            def delayed_census(path):
+                second_started.wait(fake_served_api.COUNTED)
+                return get(path)
+
+            client.get = delayed_census
+            bodies = [{"messages": [{"role": "user", "content": text}], "max_tokens": 4}
+                      for text in ("first", "second")]
+            batches.set()
+            rows, peak = conformance.watched(client, lambda: conformance.together(client, bodies))
+            batches.clear()
+        self.assertTrue(all(row.get("status") == 200 and row.get("tokens") == 4 for row in rows), rows)
+        self.assertGreaterEqual(peak[0] or 0, 2)
+
     def test_fault_drafted_differs_from_plain(self):
         self.assert_only_red("drafted")
 
@@ -179,6 +257,30 @@ class GateRunTests(unittest.TestCase):
 
     def test_fault_listed_refusal_accepted(self):
         self.assert_only_red("refusals")
+
+    def test_fault_no_draft_lands(self):
+        # Batched drafted rows accept no draft either, so concurrency fails as unproven drafting too.
+        self.assert_only_red("undrafted", also=("concurrent == solo",))
+
+    def test_fault_plain_arm_drafts(self):
+        self.assert_only_red("plain_drafts", also=("concurrent == solo",))
+
+    def test_fault_sampled_arm_drafts_nothing(self):
+        self.assert_only_red("sampled_drafts")
+
+    def test_fault_seed_never_reaches_sampling(self):
+        # Only the cached fake carries the fault, so its sampled chat also differs from the clean cache-off fake's.
+        self.assert_only_red("unsampled", also=("resumed == fresh",))
+
+    def test_fault_requests_never_overlap(self):
+        self.assert_only_red("serial")
+
+    def test_fault_empty_replies_fail_every_exactness_gate(self):
+        code, lines = self.run_kit("--gates", "drafted,repeat,concurrent,resumed", fault="empty")
+        self.assertEqual(code, 1, lines)
+        self.assertEqual(len(lines), 4, lines)
+        self.assertTrue(all(line.startswith("FAIL") and " unverified" in line for line in lines), lines)
+        self.assertTrue(all(" 0 unverified" not in line for line in lines), lines)
 
     def test_fault_cancel_keeps_a_lane(self):
         # A request left running keeps the server from ever going idle, so evict has no idle census either.
@@ -257,7 +359,8 @@ class GateRunTests(unittest.TestCase):
         self.assertEqual(code, 0, lines)
         self.assertEqual(len(lines), len(conformance.GATES))
         self.assertTrue(all(line.startswith("PASS") for line in lines), lines)
-        for fault, gate in self.GATE_OF.items():
+        # the streamed reader's draft and token counts: two faults suffice; the others change nothing it reads
+        for fault, gate in ((f, g) for f, g in self.GATE_OF.items() if f not in self.JSON_ONLY):
             with self.subTest(fault=fault):
                 code, lines = self.run_kit("--stream", "--gates", gate, fault=fault)
                 self.assertEqual(code, 1, lines)
@@ -270,11 +373,11 @@ class GateRunTests(unittest.TestCase):
         with fake(True) as url:
             plain = conformance.Client(url, "fake", timeout=10).post(body)
             streamed = conformance.Client(url, "fake", timeout=10, stream=True).post(body)
-            refused = conformance.Client(url, "fake", timeout=10, stream=True).post({**body, "n": 2}, stream=False)
+            refused = conformance.Client(url, "fake", timeout=10, stream=True).post({**body, "n": 17}, stream=False)
         self.assertEqual(streamed.pop("completion"), "finished")
         self.assertEqual(streamed, plain)
         self.assertEqual((plain["cached"], plain["accepted"]), (5, 2))
-        self.assertEqual((refused["status"], refused["error"]), (400, "n must be 1; multiple choices are not supported"))
+        self.assertEqual((refused["status"], refused["error"]), (400, "n must be an integer between 1 and 16"))
 
     def test_a_stream_that_errs_or_stops_early_is_unverified(self):
         words = [(0, "content", w) for w in ("a", "b", "c")]

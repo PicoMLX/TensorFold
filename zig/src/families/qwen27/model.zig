@@ -79,7 +79,7 @@ pub const Model = struct {
         share_fits: ?*const fn (u64) bool,
         later: bool,
     ) !*Model {
-        if (platform.getenv("TF_PROMPT_ROWS")) |raw| {
+        if ((platform.environment.Process{}).get("TF_PROMPT_ROWS")) |raw| {
             const n = std.fmt.parseInt(u32, raw, 10) catch 0;
             if (n < 16 or n > 2048 or n % 16 != 0) {
                 try platform.environment.check("TF_PROMPT_ROWS", raw);
@@ -92,7 +92,20 @@ pub const Model = struct {
         defer a.free(path);
         const text = try std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(16 << 20));
         defer a.free(text);
-        const c = try cfg.parse(a, text, null);
+        const gen_path = try std.fs.path.join(a, &.{ dir, "generation_config.json" });
+        defer a.free(gen_path);
+        // generation_config.json beside config.json: a missing file is none, any other read failure is the loader's
+        const generation = std.Io.Dir.cwd().readFileAlloc(io, gen_path, a, .limited(1 << 20)) catch |e| switch (e) {
+            error.FileNotFound => null,
+            else => return e,
+        };
+        defer if (generation) |g| a.free(g);
+        var problem: cfg.Problem = .{};
+        const c = parseServed(a, text, generation, &problem) catch |e| {
+            if (problem.len != 0) std.log.err("{s}: {s}", .{ path, problem.text() });
+            return e;
+        };
+        if (c.tied_head and ranks != 1) return error.TiedHeadNeedsOneRank;
         var local = c;
         const shard = if (ranks == 1) cfg.Shard{ .rank = 0, .ranks = 1, .global = c, .local = local } else try cfg.split(&local, rank, ranks, mode);
         try supported(shard.global);
@@ -139,13 +152,25 @@ pub const Model = struct {
         pipelines.end();
         const allocation = timing.span(.initial_allocation);
         // Serving defers automatic widening until its context and streams are known; explicit widths stay exact.
-        m.frame = try Frame.init(m.device, shard.local, @max(rows, promptRows(shard.local, if (later) 0 else m.device.generation())));
+        const geometry = try @import("attention_plan.zig").Geometry.fromConfig(shard.local, try @import("simd_attention.zig").sharedPrefix(m.device.tensorUnits()));
+        m.frame = try Frame.init(m.device, shard.local, @max(rows, promptRows(shard.local, if (later) 0 else m.device.generation(), geometry)));
         errdefer m.frame.deinit();
         allocation.end();
         m.ane = null;
         m.share_pending = true;
         if (!later) try m.finishShare(null, share_fits);
         return m;
+    }
+
+    /// The MTP draft head from `dir`'s `mtp-4bit.safetensors`, while a deferred model's files are still open.
+    pub fn loadMtp(m: *Model, io: std.Io, dir: []const u8) !void {
+        if (!m.share_pending) return error.MtpAfterFilesClosed;
+        if (m.weights.mtp != null) return;
+        const path = try std.fs.path.joinZ(m.allocator, &.{ dir, wts.mtp_file });
+        defer m.allocator.free(path);
+        std.Io.Dir.cwd().access(io, path, .{}) catch return error.MissingMtpFile;
+        try m.checkpoint.addFileSplit(m.device, path, "", "language_model.", wts.repacked);
+        try wts.loadMtp(&m.weights, m.device, &m.checkpoint, &m.shard);
     }
 
     /// A deferred share takes at most `room` bytes; zero refuses it, and decided models stay as they are.
@@ -158,7 +183,7 @@ pub const Model = struct {
         m.share_pending = false;
         defer m.checkpoint.closeFiles();
         const c = m.config;
-        const columns = try ane_policy.columns(if (platform.c.getenv("TF_ANE_COLUMNS")) |v| std.mem.span(v) else null);
+        const columns = try ane_policy.columns((platform.environment.Process{}).get("TF_ANE_COLUMNS"));
         // The share is a whole MLP's columns: a rank holds half of them, so tensor parallel keeps prompts on the GPU.
         const share = m.shard.ranks == 1 and ane_policy.requestedOnChip(columns, m.device.tensorUnits()) and !c.moe() and mtl.ane.available() and m.weights.uniformMlp();
         if (m.shard.ranks != 1) std.log.info("qwen27: tensor parallel rank {d}/{d} runs prompts on the GPU alone", .{ m.shard.rank, m.shard.ranks });
@@ -208,10 +233,10 @@ pub const Model = struct {
     }
 };
 
-/// A prompt pass's requested rows, before the runner's frame and attention limits.
-pub fn promptRows(c: cfg.Config, generation: u32) u32 {
-    const value = if (std.c.getenv("TF_PROMPT_ROWS")) |v| std.mem.span(v) else null;
-    return @import("prompt_rows.zig").requested(generation, c.moe(), value);
+/// Default frame rows follow attention geometry; a validated environment override keeps its width.
+pub fn promptRows(c: cfg.Config, generation: u32, geometry: @import("attention_plan.zig").Geometry) u32 {
+    const value = (platform.environment.Process{}).get("TF_PROMPT_ROWS");
+    return @import("prompt_rows.zig").frameRequested(generation, c.moe(), value, geometry);
 }
 
 /// The qualified sizes: the 27B's, and the 9B's (half the depth, narrower layers, the same heads of 256 and 128).
@@ -220,6 +245,11 @@ const sizes = [_]Size{
     .{ .hidden = 5120, .intermediate = 17408, .layers = 64, .heads = 24, .v_heads = 48 },
     .{ .hidden = 4096, .intermediate = 12288, .layers = 32, .heads = 16, .v_heads = 32 },
 };
+
+/// The served config: a dense tied head is admitted only under TF_QWEN27_TIED_HEAD=1.
+pub fn parseServed(a: std.mem.Allocator, text: []const u8, generation: ?[]const u8, problem: *cfg.Problem) !cfg.Config {
+    return cfg.parseTied(a, text, generation, problem, try platform.environment.read(bool, @import("tied_head.zig").flag, false));
+}
 
 fn qualifiedSize(c: cfg.Config) bool {
     for (sizes) |z| if (c.hidden == z.hidden and c.intermediate == z.intermediate and c.layers == z.layers and c.heads == z.heads and c.v_heads == z.v_heads) return true;
@@ -231,12 +261,29 @@ pub fn supported(c: cfg.Config) !void {
     const dense = qualifiedSize(c) and c.kv_heads == 4 and c.k_heads == 16 and !c.moe();
     // Ornith-1.5-122B: 256 experts of 1,024 and a shared expert of 1,024 over 3,072, 32 heads over 2 of 256
     const routed = c.hidden == 3072 and c.intermediate == 1024 and c.layers == 48 and c.heads == 32 and c.kv_heads == 2 and c.k_heads == 16 and c.v_heads == 64 and c.experts == 256 and c.top_k == 8 and c.moe_intermediate == 1024;
-    if (!(dense or routed) or c.vocab != 248320) return error.UnqualifiedQwenShape;
+    if (!(dense or routed or a3b(c)) or c.vocab != 248320) return error.UnqualifiedQwenShape;
     try @import("geometry.zig").supported(c);
+}
+
+/// Qwen3.6-35B-A3B: 256 experts of 512 and a shared expert of 512 over 2,048, 16 heads over 2 of 256 (text only).
+pub fn a3b(c: cfg.Config) bool {
+    return c.hidden == 2048 and c.intermediate == 512 and c.layers == 40 and c.heads == 16 and c.kv_heads == 2 and c.k_heads == 16 and c.v_heads == 32 and c.experts == 256 and c.top_k == 8 and c.moe_intermediate == 512;
 }
 
 fn qualifiedGeneration(generation: u32) bool {
     return generation >= 13 and generation <= 18;
+}
+
+test "the qualified shapes: the dense 27B, Ornith-1.5-122B and Qwen3.6-35B-A3B; a 35B of other widths is refused" {
+    var c = try cfg.parse(std.testing.allocator, @import("config_test.zig").a3b_json, null);
+    try supported(c);
+    try std.testing.expect(a3b(c)); // --vision refuses it by this
+    c.moe_intermediate = 1024;
+    try std.testing.expect(!a3b(c));
+    try std.testing.expectError(error.UnqualifiedQwenShape, supported(c));
+    c.moe_intermediate = 512;
+    c.top_k = 10;
+    try std.testing.expectError(error.UnqualifiedQwenShape, supported(c));
 }
 
 test "unknown and older GPU generations refuse before any weight load" {

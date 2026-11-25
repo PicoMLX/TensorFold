@@ -266,10 +266,11 @@ pub const Lanes = struct {
         const self = of(ptr);
         const l = self.lanes.getPtr(s) orelse return;
         const at = l.fill orelse return;
-        if (at <= s.cached or s.reuse.hook == null) return;
-        try self.x.bind(l.slot);
+        if (at <= s.cached) return;
         var keeps: share_mod.Keeps = undefined;
-        _ = self.x.chunk(s.prompt(), at, false, null, .{ .ptr = null, .check = cancelNow }, self.marksOf(s, &keeps)) catch |err| {
+        const marks = self.marksOf(s, &keeps) orelse return;
+        try self.x.bind(l.slot);
+        _ = self.x.chunk(s.prompt(), at, false, null, .{ .ptr = null, .check = cancelNow }, marks) catch |err| {
             if (err == error.Cancelled) return;
             return err;
         };
@@ -360,8 +361,7 @@ pub const Lanes = struct {
     fn images(self: *Lanes, s: *lanes.Stream, from: ?engine.Resume) !void {
         if (s.images.len == 0) return;
         const v = self.x.e.images orelse return error.NoVision;
-        try v.begin(self.x.e.slot, s.images, if (from) |r| r.at else 0); // a refusal here leaves every rank as it was
-        try self.x.images(v);
+        try self.x.encode(v, s.images, if (from) |r| r.at else 0);
     }
     const Sink = @import("cuda_prompt_sink.zig").Sink;
 

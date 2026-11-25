@@ -1,2 +1,6 @@
 # Text files check out with LF on every platform: tests embed fixtures and compare their bytes.
 * text=auto eol=lf
+
+# Preserve these captured, checksummed receipts byte for byte, including the native log's trailing spaces.
+docs/receipts/gfx1201-flashnext-tp2-f8dacd77/rank0.log whitespace=-blank-at-eol
+docs/receipts/gfx1201-flashnext-tp2-f8dacd77/rank1.log whitespace=-blank-at-eol

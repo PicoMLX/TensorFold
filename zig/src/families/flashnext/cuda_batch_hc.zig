@@ -2,6 +2,7 @@
 const std = @import("std");
 const wt = @import("cuda_prompt_wt.zig");
 const parts = @import("cuda_batch_state.zig");
+const tiles = @import("cuda_tiles.zig");
 
 const dims = wt.dims;
 const streams = wt.streams;
@@ -17,10 +18,15 @@ pub fn on() bool {
     return @import("sys").environment.read(bool, "TF_FLASHNEXT_HC_FUSE", true) catch true;
 }
 
-/// Whether hc_w's read-out takes its normed rows from the writeback: native, nothing kept, 64 rows or more, our glue.
+/// Whether hc_w's read-out takes its normed rows from the writeback: native, nothing kept, 64 rows or more, unfused.
 pub fn fuses(pass: anytype, hc_w: wt.HcW, n: usize, keep: parts.HcKeep) bool {
     return n >= 64 and hc_w.down.native != null and std.meta.eql(keep, parts.HcKeep{}) and dims == 2560 and
-        streams == 4 and pass.tri.writebackOwned() and pass.k.forms.hc_fuse;
+        streams == 4 and pass.tri.writebackOwned() and pass.k.forms.hc_fuse and !promptFused(pass, hc_w, n);
+}
+
+/// Whether a prompt pass's rows take tiles.readoutFused: the setting, tiles.fused_rows or more, its BF16 shapes.
+pub fn promptFused(pass: anytype, hc_w: wt.HcW, n: usize) bool {
+    return pass.k.forms.readout_fused and pass.hooks.prompt and n >= tiles.fused_rows and tiles.nativeFused(hc_w);
 }
 
 /// The pass's pending writeback with hc_w's normalize in the same launch: the normed rows readoutNative reads.
@@ -59,4 +65,28 @@ pub fn readoutNative(pass: anytype, hc_w: wt.HcW, r0: usize, n: usize) !void {
     try pass.tri.hcReduceAct(s.hc_part, act, xs_act, inj_ptr, 1, n, streams, low, hc_w.n_down, hc_w.has_inj);
     try pass.k.nativeMatmul(pass.stream, act, low, n, up, s.hc_up, s.native_part, .bf16);
     try pass.tri.hcDenseMix(s.hc_up, norm, s.mixed + r0 * dims * 2, s.xsm + r0 * (dims / 32) * 4, n, dims, streams);
+}
+
+test "fused read-out: on takes the tiles from 768 rows and 0 keeps the five launches" {
+    const cuda = @import("cuda");
+    const zero: cuda.DeviceBuffer = .{ .d = undefined, .ptr = 0, .len = 0 };
+    const hc_w: wt.HcW = .{
+        .scale = zero,
+        .down = .{ .w = zero, .s = zero, .b = zero, .n = low, .k = wide, .native = cuda.modelopt.bf16Weight(0, low, wide) },
+        .up = .{ .w = zero, .s = zero, .b = zero, .n = wide, .k = low, .native = cuda.modelopt.bf16Weight(0, wide, low) },
+        .n_down = low,
+        .has_inj = 0,
+    };
+    const Pass = struct {
+        k: struct { forms: struct { readout_fused: bool } },
+        hooks: struct { prompt: bool },
+    };
+    const enabled = Pass{ .k = .{ .forms = .{ .readout_fused = true } }, .hooks = .{ .prompt = true } };
+    const disabled = Pass{ .k = .{ .forms = .{ .readout_fused = false } }, .hooks = .{ .prompt = true } };
+    const decode = Pass{ .k = .{ .forms = .{ .readout_fused = true } }, .hooks = .{ .prompt = false } };
+    try std.testing.expect(promptFused(enabled, hc_w, tiles.fused_rows));
+    try std.testing.expect(promptFused(enabled, hc_w, 3072));
+    try std.testing.expect(!promptFused(disabled, hc_w, 3072));
+    try std.testing.expect(!promptFused(enabled, hc_w, tiles.fused_rows - 1));
+    try std.testing.expect(!promptFused(decode, hc_w, 3072));
 }
